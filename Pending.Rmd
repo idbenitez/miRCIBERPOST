@@ -1,0 +1,2059 @@
+---
+title: "Pending"
+author: "Iván Benítez"
+date: "2022-09-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## HR. (All)
+
+```{r,eval=FALSE}
+
+library(maxstat)
+dat$exitus <- as.numeric(as.character(dat$exitus))
+dat$ratio1 <- dat$RedCap
+
+
+for( i in miRNAs){
+  dat$mir1 <- dat[,i]
+  mtHL <- maxstat.test(Surv(follow,exitus) ~mir1,data= dat , smethod="LogRank", pmethod="HL",minprop = 0.10)
+  dat$ratio1 <- if_else(dat$mir1> mtHL$estimate, "High","Low")
+  dat$ratio1 <- relevel(factor(dat$ratio1),ref = "Low")
+  dat[,paste0(i,".cat")] <- dat$ratio1 
+}
+
+
+
+res <- lapply(paste0(miRNAs,".cat"), function(i){
+# model_epw <-  coxph(as.formula(paste0("Surv(follow,exitus)~ ",i,"")), data =  dat %>%  filter(follow >0),
+#                             ties    = c("efron","breslow","exact"))
+dat[,i] <- relevel(dat[,i],ref = "High") 
+mod <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",i,"")) , dat %>%  filter(follow >0))
+curvas.km.aml <- survfit(as.formula(paste0("Surv(follow,exitus)~ ",i,"")), data= dat)
+t1 <- as.data.frame(summary(mod)$coefficients)
+t1$cindex <- summary(mod)$concordance[1]
+t1$cindex_se <- summary(mod)$concordance[2]
+
+# row.names(t1) <- i
+# library(survminer)
+# d1 <- ggsurvplot(curvas.km.aml, pval = FALSE, 
+#                  risk.table = TRUE,
+#                  size = 1, 
+#                  censor.shape=NA,
+#                  xlab = "Time (days)",
+#                  risk.table.col = "strata",
+#                  legend = "top",
+#                  break.time.by = 10,
+#                  ylim = c(0,1),
+#                  xlim = c(0,45),
+#                  legend.labs = c(paste0("Low ",i," ratio"),paste0("High ",i," ratio")),
+#                  legend.title = "",
+#                  title = " ",
+#                  risk.table.height = 0.20, #Useful when you have multiple groups
+#                  palette =c("#07B5E0","#81E007"),
+#                  #tables.theme = theme_cleantable(),
+#                  fontsize = 4.5,
+#                  font.main = c(20, "bold"),
+#                  font.legend = 20, 
+#                  font.x = 20, 
+#                  font.y = 20,
+#                  font.tickslab = 25,
+#                  risk.table.fontsize = 8,
+#                  #ylab ="Cumulative Incidence (%)",
+#                  risk.table.y.text = FALSE) 
+# 
+# d1$plot = d1$plot + annotate("text",x = 20, y = 0.05,label =  paste0("Cut-off: ",round(mtHL$estimate,2),"; HR: ",round(summary(model_epw)$coefficients["ratio1High",c("exp(coef)")],2),"; p = ",round(summary(model_epw)$coefficients["ratio1High",c("Pr(>|z|)")],4)),size = 8) + theme(legend.direction = "vertical")
+# #cairo_pdf(paste0("BAS/09_results/Surv_ratio_",gsub("/",".",i),".pdf"),height = 10,width = 10)
+t1
+#dev.off()
+})
+
+res2 <- lapply(res, function(x){
+  x}) %>% 
+  do.call(rbind,.) %>% 
+  as.data.frame() %>% 
+  mutate(LI = exp(coef - 1.96*`se(coef)`), LS = exp(coef + 1.96*`se(coef)`) )
+
+DT::datatable(res2, extensions = "Buttons", options = list(pageLength = 20, dom = "Bftip", buttons = c("copy", "csv", "excel", "pdf")))  %>% DT::formatRound(names(res2), 4)
+
+
+res2 <- res2 %>% mutate(name = rownames(res2))
+
+res2$name <- factor(res2$name, levels = levels(factor(res2$name))[c(2,7,8,9,1,3,4,5,6)])
+res2 <- plyr::ddply(res2, c('name'))
+
+library(ggforestplot)
+res2$color <- ifelse(res2$`Pr(>|z|)`<0.05,"blue","black")
+p2 <- ggforestplot::forestplot(
+  df = res2  %>% mutate( pvalue = `Pr(>|z|)`, se = `se(coef)`),
+  name = name,
+  estimate = coef,
+  se = se,
+  logodds = TRUE,
+  pvalue = pvalue,
+  psignif = 0.05,
+  title = " ",
+  xlab =  " Hazard Ratio (95%CI)",
+  fatten = 20,
+  colour = color,
+)+ #+ xlim(1/5,5) +
+  theme(legend.title = element_blank(), legend.position = "none",panel.background = element_rect(fill = "transparent")) + 
+  ggplot2::coord_cartesian(xlim = c(1/5, 5)) + scale_color_manual(values = c("black","#769ECB"))#+ theme(text = element_text("text",size = 12))
+p2$layers[[1]]$aes_params$odd <- "#00000000" 
+p2 
+
+cairo_pdf("09_results/HR.pdf",width = 5,height = 4)
+
+p2
+
+dev.off()
+```
+
+```{r}
+save.image(file = "07_Data/BBDD_post_cutoff3.Rdata")
+#clinical_var <- c("IH_age_estimateyears","IH_sex","IH_hypertension_mhyn","IH_chronicpul_mhyn","IU_SOFAh","IU_PAFI","IU_creatinine","IU_lymphocyte","IU_platelet","IU_paco2_daily","IU_ph_daily")
+```
+
+
+
+# Firma LASSO cox 
+
+```{r}
+library(glmnet)
+#dat[complete.cases(dat[,c(miRNAs,clinical_var),]
+
+for(i in paste0(miRNAs,".cat")){
+  dat[,i] <- relevel(dat[,i], ref = "High")
+}
+  
+x <- dat[which(dat$follow>0),paste0(miRNAs,".cat")]
+x <- makeX(x,na.impute = TRUE)
+x <- x[,seq(from = 2,to = 18,by = 2)]
+#rownames(x) <- dat[which(dat$follow>0),"RedCap"]
+y <-dat[which(dat$follow>0),c("follow","exitus")]
+y$exitus <- as.numeric(y$exitus)
+y <- as.matrix(y)
+colnames(y) <- c("time","status")
+
+# LASSO Optimo
+
+set.seed(1)
+lasso_model <- cv.glmnet(x, y, family = "cox", type.measure = "C",standardize = TRUE,relax = TRUE,nfolds = 5)
+plot(lasso_model)
+
+set.seed(1)                                # replicate  results
+lasso_model <- glmnet(x, y, alpha=1,  family = "cox", type.measure = "C",gamma = lasso_model$relaxed$gamma.1se, lambda = lasso_model$relaxed$lambda.1se,standardize = TRUE,relax = TRUE) 
+
+
+best_lambda_lasso <- lasso_model$lambda  # largest lambda in 1 SE
+lasso_coef <- lasso_model$beta
+coef_l = data.table(lasso = lasso_coef[,1])      # build table
+coef_l[, feature := rownames(lasso_coef)]       # add feature names
+to_plot_l = melt(coef_l                      # label table
+                 , id.vars='feature'
+                 , variable.name = 'model'
+                 , value.name = 'coefficient')
+
+#cairo_pdf("Figure_Lasso_2_NOSA.pdf",width = 12,height = 6)
+pdf(file = "09_results/LASSO.pdf",height = 3,width = 6)
+
+ggplot(data = to_plot_l %>% filter(coefficient != 0) %>% mutate(feature =  fct_reorder(feature,coefficient)),    # plot coefficients
+       aes(x=feature, y=coefficient, fill=feature,  color = feature)) +
+    coord_flip() +         
+    geom_bar(stat='identity',width = 0.5) +
+  #  facet_wrap(~ model) + guides(fill=FALSE) + 
+      theme_minimal(base_size = 18) + ylab("LASSO regression coefficient") + xlab(" ") + scale_color_manual(values =  c("#BFBFFF","#A3A3FF","#7879FF","#4949FF"))+ scale_fill_manual(values = c("#BFBFFF","#A3A3FF","#7879FF","#4949FF")) + theme(legend.position = "none")
+dev.off()
+
+ggplot(data = to_plot_l %>% filter(coefficient != 0) %>% mutate(feature =  fct_reorder(feature,coefficient)),    # plot coefficients
+       aes(x=feature, y=coefficient, fill=feature,  color = feature)) +
+    coord_flip() +         
+    geom_bar(stat='identity',width = 0.5) +
+  #  facet_wrap(~ model) + guides(fill=FALSE) + 
+      theme_minimal(base_size = 18) + ylab("LASSO regression coefficient") + xlab(" ") + scale_color_manual(values =  c("#BFBFFF","#A3A3FF","#7879FF","#4949FF"))+ scale_fill_manual(values = c("#BFBFFF","#A3A3FF","#7879FF","#4949FF")) + theme(legend.position = "none")
+
+```
+
+```{r}
+library(finalfit)
+library(concordance)
+mod <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",paste(gsub("Low","",c(to_plot_l[which(to_plot_l$coefficient != 0),"feature"])$feature),collapse = "+"),"")) , dat %>%  filter(follow >0))
+summary(mod)
+dat$score <- predict(mod,newdata = dat)
+mtHL <- maxstat.test(Surv(follow,exitus) ~score,data= dat , smethod="LogRank", pmethod="HL",minprop = 0.1)
+dat$score.cat <- if_else(dat$score> mtHL$estimate, "High","Low")
+dat$score.cat <- relevel(factor(dat$score.cat),ref = "Low")
+
+dependent = "Surv(follow,exitus)"
+explanatory.cat = paste(gsub("Low","",c(to_plot_l[which(to_plot_l$coefficient != 0),"feature"])$feature))
+
+dat %>%  filter(follow >0) %>% 
+    finalfit(dependent, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE) -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+
+dat %>%  filter(follow >0) %>%
+   hr_plot(dependent, explanatory.cat, pval = TRUE)
+
+dat %>%  filter(follow >0) %>%
+  surv_plot(dependent, "score.cat", pval = FALSE)  
+
+dat %>%  filter(follow >0) %>%
+  finalfit(dependent, "score.cat", add_dependent_label = FALSE, metrics = TRUE)  
+
+
+
+
+curvas.km.aml <- survfit(Surv(follow,exitus)~  score.cat, data= dat )
+mod <- coxph(Surv(follow,exitus) ~   score.cat , dat)
+cox.zph(mod)
+summary(mod)
+p1 <- survminer::ggsurvplot(curvas.km.aml, pval = FALSE, 
+                 risk.table = TRUE,size = 1, 
+                 censor.shape=NA,
+                 xlab = "Time (days)",
+                 risk.table.col = "strata",
+                 legend = "top",
+                 break.time.by = 10,
+              #   ylim = c(0,1),
+                # xlim = c(0,90),
+                 legend.labs = c("Low risk","High risk"),
+                 legend.title = "",
+                 title = "",
+                 risk.table.height = 0.20, #Useful when you have multiple groups
+                 palette =c("#8FC1A9","#c18fa7"),
+                 #tables.theme = theme_cleantable(),
+                 fontsize = 3.5,
+                 font.main = c(15, "bold"),
+                 font.legend = 15, 
+                 font.x = 15, 
+                 font.y = 15,
+                 font.tickslab = 15,
+                 risk.table.fontsize = 6,
+               #  ylab ="Cumulative Incidence (%)",
+                 risk.table.y.text = FALSE)
+
+as <- summary(mod)
+p1$plot <- p1$plot + annotate("text",x = 15, y = 0.05,label = paste0("HR ", round(as$conf.int[,'exp(coef)'],2)," (95%CI ",round(as$conf.int[,'lower .95'],2)," - ",round(as$conf.int[,'upper .95'],2),"; p = ",round(as$coefficients[,'Pr(>|z|)'],4),")"),size = 6)
+
+cairo_pdf("09_results/Kaplan_meier.pdf",width = 12,height = 7)
+p1
+dev.off()
+
+
+```
+
+# SCORES + FIRMA 
+
+## SCORE vs Mortality 28D and 90D
+
+```{r}
+dat$follow_ICU <- as.numeric(dat$AH_f_datehosp -  dat$IH_icu_hostdat_validated)
+
+dat$exitus28 <- ifelse(dat$exitus == 0, "No", ifelse(dat$follow_ICU>=28,"No","Yes"))
+dat$exitus90 <- ifelse(dat$exitus == 0, "No", ifelse(dat$follow_ICU>=90,"No","Yes"))
+
+epitools::oddsratio(table(dat$exitus28,dat$score.cat))
+epitools::oddsratio(table(dat$exitus90,dat$score.cat))
+epitools::oddsratio(table(dat$exitus,dat$score.cat))
+
+auc(dat$exitus28,dat$score)
+auc(dat$exitus90,dat$score)
+auc(dat$exitus,dat$score)
+
+
+```
+## Exitus 28D
+
+```{r}
+table(dat$exitus28)
+
+```
+
+## Exitus 90D
+
+```{r}
+table(dat$exitus90)
+
+```
+
+## Exitus INTRAUCI
+
+```{r}
+table(dat$exitus)
+
+```
+
+
+
+## Modelo clínico
+
+### mortalidad 
+
+```{r}
+# datos 
+dat$IU_PAFI_log <- log(dat$IU_PAFI)
+dat$IU_SOFAh.cat <- ifelse(dat$IU_SOFAh>0,">0","0")
+dat$IU_APACHE.cat <- ifelse(dat$IU_APACHE>=5,">=5","<5")
+dependent = "Surv(follow,exitus)"
+
+
+# modelo clínico
+explanatory.cat = c("IH_age_estimateyears", "IH_sex", "IH_hypertension_mhyn",  "IH_chronicpul_mhyn", "IH_renal_mhyn", "IH_diabetes_mhyn_2", "IU_PAFI_log", "IU_ph_daily", "IU_lymphocyte_log", "IU_platelet", "IU_ddimer_log", "IU_urea_log", "IU_creatinine_log","score.cat")
+dat %>%  filter(follow >0) %>% 
+    finalfit(dependent, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)   -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%  filter(follow >0) %>%
+#    hr_plot(dependent, explanatory.cat, pval = TRUE)
+
+explanatory = c("IH_age_estimateyears", "IH_sex", "IH_hypertension_mhyn",  "IH_chronicpul_mhyn", "IH_renal_mhyn", "IH_diabetes_mhyn_2", "IU_PAFI_log", "IU_ph_daily", "IU_lymphocyte_log", "IU_platelet", "IU_ddimer_log", "IU_urea_log", "IU_creatinine_log")
+mod <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))) , dat  %>%  filter(follow >0) %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",paste0(c(explanatory),collapse = "+"))) , dat %>%  filter(follow >0) %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+ctest <- concordance(mod,mod2)
+ctest
+# compare concordance values of fit4 and fit5
+contr <- c(-1, 1)
+dtest <- contr %*% coef(ctest)
+dvar <- contr %*% vcov(ctest) %*% contr
+c(contrast=dtest, sd=sqrt(dvar), z=dtest/sqrt(dvar))
+paste("p.value =",round(pnorm(dtest/sqrt(dvar)),4))
+
+```
+
+
+```{r}
+## Grafico forestplot mostrando el OR (95%CI) y indicando con puntos blancos los OR significativos
+
+
+# Librerias
+  library(dplyr)
+  library(tidyverse)
+  library(broom)
+  library(forestplot)
+  #library(colorspace)
+
+  
+# Funcion para obtener los coeficientes de un glm incluyendo la categoria de referencia
+# https://stackoverflow.com/questions/50781110/extracting-reference-level-from-glm-coefficients
+
+  tidy_coefs_with_ref <- function(mod_obj, sep = "_"){
+    
+    tidy_coefs <- tidy(mod_obj) %>% 
+      separate(term, c("variable", "level"), sep, remove = FALSE) %>% 
+      mutate(variable = paste0(variable, sep))
+    
+    xlevels <- mod_obj$xlevels  
+    
+    missing_levels <- xlevels %>% 
+      enframe() %>% 
+      unnest() %>% 
+      set_names(c("variable", "level"))
+    
+    missing_levels %>% 
+      anti_join(tidy_coefs) %>% 
+      bind_rows(tidy_coefs) %>% 
+      arrange(variable, level)
+    
+  }
+
+
+# Cargar datos (generamos una variable categorica para el ejemplo)
+# Ajustar el modelo
+model <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))) , dat %>%  filter(follow >0)  %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+
+
+model <- coxph(Surv(follow, exitus) ~ scale(IH_age_estimateyears) + IH_sex + IH_hypertension_mhyn + 
+    IH_chronicpul_mhyn + IH_renal_mhyn + IH_diabetes_mhyn_2 + 
+    scale(IU_PAFI_log) + scale(IU_ph_daily) + scale(IU_lymphocyte_log) + scale(IU_platelet) + 
+    scale(IU_ddimer_log) + scale(IU_urea_log) + scale(IU_creatinine_log) + score.cat, dat %>%  filter(follow >0)  %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+  
+  
+  # tidy_coefs <- data.frame(tidy(model))
+  # tidy_coefs$type <- lapply(tidy_coefs$term, function(x) names(PimaIndiansDiabetes2)[grep(pattern=x, names(PimaIndiansDiabetes2))])
+  # 
+  # outcome <- "diabetes"
+  # datos <- model$data
+  # names(datos)[!names(datos)%in%outcome]
+  # 
+  # 
+  # tidy_coefs_with_ref(model)
+  # 
+  # taula <- gtsummary::tbl_regression(model, exponentiate = TRUE)
+  # 
+  # modify_column_hide_ex1 <-
+  #   model %>%
+  #   tbl_regression() %>%
+  #   modify_column_hide(column = ci) %>%
+  #   modify_column_unhide(column = std.error)
+  # 
+  # 
+  
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,3,5)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  #taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Add referencia para age_cat
+  # aux <- taula[length(taula$name),]
+  # aux$beta <- 0
+  # aux$se <- aux$pvalue <- NA
+  # aux$orden <- 99
+  # aux$name <- paste0("age_cat", levels(PimaIndiansDiabetes2$age_cat)[1])
+  # taula <- rbind(taula, aux)
+  # taula$orden[ taula$orden==8] <- 9
+  # taula$orden[ taula$orden==99] <- 8
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("Clinical model + Score",taula$name),
+                   c("   Hazard Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+p1 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, 
+                                             fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI,fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Hazard Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+cairo_pdf("09_results/clinical_score.pdf",width = 7,height = 12)
+p1
+dev.off()
+
+p1
+```
+
+
+
+### mortalidad 28 días
+
+```{r}
+
+dat$exitus28_num <- ifelse(dat$exitus28 == "No",0,1)
+dependent2 = "exitus28_num"
+dat$IU_platelet[dat$IU_platelet>1000] <- NA
+# modelo clínico
+explanatory.cat = c("IH_age_estimateyears", "IH_sex", "IH_hypertension_mhyn",  "IH_chronicpul_mhyn", "IH_renal_mhyn", "IH_diabetes_mhyn_2", "IU_PAFI_log", "IU_ph_daily", "IU_lymphocyte_log", "IU_platelet", "IU_ddimer_log", "IU_urea_log", "IU_creatinine_log","score.cat")
+dat  %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)   -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+explanatory = c("IH_age_estimateyears", "IH_sex", "IH_hypertension_mhyn",  "IH_chronicpul_mhyn", "IH_renal_mhyn", "IH_diabetes_mhyn_2", "IU_PAFI_log", "IU_ph_daily", "IU_lymphocyte_log", "IU_platelet", "IU_ddimer_log", "IU_urea_log", "IU_creatinine_log")
+mod <- glm(as.formula(paste0("exitus28_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))), family = "binomial", dat %>% dplyr::select(exitus28_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus28_num~ ",paste0(c(explanatory),collapse = "+"))), family = "binomial" , dat  %>% dplyr::select(exitus28_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus28_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus28_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus28_num,test_pred),roc(mod2$data$exitus28_num,test_pred2))
+```
+
+
+
+```{r}
+## Grafico forestplot mostrando el OR (95%CI) y indicando con puntos blancos los OR significativos
+
+
+# Librerias
+  library(dplyr)
+  library(tidyverse)
+  library(broom)
+  library(forestplot)
+  #library(colorspace)
+
+  
+# Funcion para obtener los coeficientes de un glm incluyendo la categoria de referencia
+# https://stackoverflow.com/questions/50781110/extracting-reference-level-from-glm-coefficients
+
+  tidy_coefs_with_ref <- function(mod_obj, sep = "_"){
+    
+    tidy_coefs <- tidy(mod_obj) %>% 
+      separate(term, c("variable", "level"), sep, remove = FALSE) %>% 
+      mutate(variable = paste0(variable, sep))
+    
+    xlevels <- mod_obj$xlevels  
+    
+    missing_levels <- xlevels %>% 
+      enframe() %>% 
+      unnest() %>% 
+      set_names(c("variable", "level"))
+    
+    missing_levels %>% 
+      anti_join(tidy_coefs) %>% 
+      bind_rows(tidy_coefs) %>% 
+      arrange(variable, level)
+    
+  }
+
+
+# Cargar datos (generamos una variable categorica para el ejemplo)
+# Ajustar el modelo
+
+
+model <- glm(exitus28_num ~ scale(IH_age_estimateyears) + IH_sex + IH_hypertension_mhyn + 
+    IH_chronicpul_mhyn + IH_renal_mhyn + IH_diabetes_mhyn_2 + 
+    scale(IU_PAFI_log) + scale(IU_ph_daily) + scale(IU_lymphocyte_log) + scale(IU_platelet) + 
+    scale(IU_ddimer_log) + scale(IU_urea_log) + scale(IU_creatinine_log) + score.cat, family = "binomial", dat   %>% dplyr::select(exitus28_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+  
+  
+  # tidy_coefs <- data.frame(tidy(model))
+  # tidy_coefs$type <- lapply(tidy_coefs$term, function(x) names(PimaIndiansDiabetes2)[grep(pattern=x, names(PimaIndiansDiabetes2))])
+  # 
+  # outcome <- "diabetes"
+  # datos <- model$data
+  # names(datos)[!names(datos)%in%outcome]
+  # 
+  # 
+  # tidy_coefs_with_ref(model)
+  # 
+  # taula <- gtsummary::tbl_regression(model, exponentiate = TRUE)
+  # 
+  # modify_column_hide_ex1 <-
+  #   model %>%
+  #   tbl_regression() %>%
+  #   modify_column_hide(column = ci) %>%
+  #   modify_column_unhide(column = std.error)
+  # 
+  # 
+  
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+taula$pvalue <- round(taula$pvalue,4)
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Add referencia para age_cat
+  # aux <- taula[length(taula$name),]
+  # aux$beta <- 0
+  # aux$se <- aux$pvalue <- NA
+  # aux$orden <- 99
+  # aux$name <- paste0("age_cat", levels(PimaIndiansDiabetes2$age_cat)[1])
+  # taula <- rbind(taula, aux)
+  # taula$orden[ taula$orden==8] <- 9
+  # taula$orden[ taula$orden==99] <- 8
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("Clinical model + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+p1 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, 
+                                             fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI,fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Hazard Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+cairo_pdf("09_results/clinical_score_28.pdf",width = 7,height = 12)
+p1
+dev.off()
+
+p1
+```
+
+
+### mortalidad 90 días
+
+```{r}
+
+dat$exitus90_num <- ifelse(dat$exitus90 == "No",0,1)
+dependent2 = "exitus90_num"
+dat$IU_platelet[dat$IU_platelet>1000] <- NA
+# modelo clínico
+explanatory.cat = c("IH_age_estimateyears", "IH_sex", "IH_hypertension_mhyn",  "IH_chronicpul_mhyn", "IH_renal_mhyn", "IH_diabetes_mhyn_2", "IU_PAFI_log", "IU_ph_daily", "IU_lymphocyte_log", "IU_platelet", "IU_ddimer_log", "IU_urea_log", "IU_creatinine_log","score.cat")
+dat  %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)   -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+explanatory = c("IH_age_estimateyears", "IH_sex", "IH_hypertension_mhyn",  "IH_chronicpul_mhyn", "IH_renal_mhyn", "IH_diabetes_mhyn_2", "IU_PAFI_log", "IU_ph_daily", "IU_lymphocyte_log", "IU_platelet", "IU_ddimer_log", "IU_urea_log", "IU_creatinine_log")
+mod <- glm(as.formula(paste0("exitus90_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))), family = "binomial", dat %>% dplyr::select(exitus90_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus90_num~ ",paste0(c(explanatory),collapse = "+"))), family = "binomial" , dat  %>% dplyr::select(exitus90_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus90_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus90_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus90_num,test_pred),roc(mod2$data$exitus90_num,test_pred2))
+```
+
+
+
+```{r}
+## Grafico forestplot mostrando el OR (95%CI) y indicando con puntos blancos los OR significativos
+
+
+# Librerias
+  library(dplyr)
+  library(tidyverse)
+  library(broom)
+  library(forestplot)
+  #library(colorspace)
+
+  
+# Funcion para obtener los coeficientes de un glm incluyendo la categoria de referencia
+# https://stackoverflow.com/questions/50781110/extracting-reference-level-from-glm-coefficients
+
+  tidy_coefs_with_ref <- function(mod_obj, sep = "_"){
+    
+    tidy_coefs <- tidy(mod_obj) %>% 
+      separate(term, c("variable", "level"), sep, remove = FALSE) %>% 
+      mutate(variable = paste0(variable, sep))
+    
+    xlevels <- mod_obj$xlevels  
+    
+    missing_levels <- xlevels %>% 
+      enframe() %>% 
+      unnest() %>% 
+      set_names(c("variable", "level"))
+    
+    missing_levels %>% 
+      anti_join(tidy_coefs) %>% 
+      bind_rows(tidy_coefs) %>% 
+      arrange(variable, level)
+    
+  }
+
+
+# Cargar datos (generamos una variable categorica para el ejemplo)
+# Ajustar el modelo
+
+
+model <- glm(exitus90_num ~ scale(IH_age_estimateyears) + IH_sex + IH_hypertension_mhyn + 
+    IH_chronicpul_mhyn + IH_renal_mhyn + IH_diabetes_mhyn_2 + 
+    scale(IU_PAFI_log) + scale(IU_ph_daily) + scale(IU_lymphocyte_log) + scale(IU_platelet) + 
+    scale(IU_ddimer_log) + scale(IU_urea_log) + scale(IU_creatinine_log) + score.cat, family = "binomial", dat   %>% dplyr::select(exitus90_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+  
+  
+  # tidy_coefs <- data.frame(tidy(model))
+  # tidy_coefs$type <- lapply(tidy_coefs$term, function(x) names(PimaIndiansDiabetes2)[grep(pattern=x, names(PimaIndiansDiabetes2))])
+  # 
+  # outcome <- "diabetes"
+  # datos <- model$data
+  # names(datos)[!names(datos)%in%outcome]
+  # 
+  # 
+  # tidy_coefs_with_ref(model)
+  # 
+  # taula <- gtsummary::tbl_regression(model, exponentiate = TRUE)
+  # 
+  # modify_column_hide_ex1 <-
+  #   model %>%
+  #   tbl_regression() %>%
+  #   modify_column_hide(column = ci) %>%
+  #   modify_column_unhide(column = std.error)
+  # 
+  # 
+  
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+taula$pvalue <- round(taula$pvalue,4)
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Add referencia para age_cat
+  # aux <- taula[length(taula$name),]
+  # aux$beta <- 0
+  # aux$se <- aux$pvalue <- NA
+  # aux$orden <- 99
+  # aux$name <- paste0("age_cat", levels(PimaIndiansDiabetes2$age_cat)[1])
+  # taula <- rbind(taula, aux)
+  # taula$orden[ taula$orden==8] <- 9
+  # taula$orden[ taula$orden==99] <- 8
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("Clinical model + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+p1 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, 
+                                             fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI,fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Hazard Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+cairo_pdf("09_results/clinical_score_90.pdf",width = 7,height = 12)
+p1
+dev.off()
+
+p1
+```
+
+
+
+
+
+### mortalidad intraUCI
+
+```{r}
+
+dat$exitus_num <- dat$exitus
+dependent2 = "exitus_num"
+dat$IU_platelet[dat$IU_platelet>1000] <- NA
+# modelo clínico
+explanatory.cat = c("IH_age_estimateyears", "IH_sex", "IH_hypertension_mhyn",  "IH_chronicpul_mhyn", "IH_renal_mhyn", "IH_diabetes_mhyn_2", "IU_PAFI_log", "IU_ph_daily", "IU_lymphocyte_log", "IU_platelet", "IU_ddimer_log", "IU_urea_log", "IU_creatinine_log","score.cat")
+dat  %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)   -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+explanatory = c("IH_age_estimateyears", "IH_sex", "IH_hypertension_mhyn",  "IH_chronicpul_mhyn", "IH_renal_mhyn", "IH_diabetes_mhyn_2", "IU_PAFI_log", "IU_ph_daily", "IU_lymphocyte_log", "IU_platelet", "IU_ddimer_log", "IU_urea_log", "IU_creatinine_log")
+mod <- glm(as.formula(paste0("exitus_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))), family = "binomial", dat %>% dplyr::select(exitus_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus_num~ ",paste0(c(explanatory),collapse = "+"))), family = "binomial" , dat  %>% dplyr::select(exitus_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus_num,test_pred),roc(mod2$data$exitus_num,test_pred2))
+```
+
+
+
+```{r}
+## Grafico forestplot mostrando el OR (95%CI) y indicando con puntos blancos los OR significativos
+
+
+# Librerias
+  library(dplyr)
+  library(tidyverse)
+  library(broom)
+  library(forestplot)
+  #library(colorspace)
+
+  
+# Funcion para obtener los coeficientes de un glm incluyendo la categoria de referencia
+# https://stackoverflow.com/questions/50781110/extracting-reference-level-from-glm-coefficients
+
+  tidy_coefs_with_ref <- function(mod_obj, sep = "_"){
+    
+    tidy_coefs <- tidy(mod_obj) %>% 
+      separate(term, c("variable", "level"), sep, remove = FALSE) %>% 
+      mutate(variable = paste0(variable, sep))
+    
+    xlevels <- mod_obj$xlevels  
+    
+    missing_levels <- xlevels %>% 
+      enframe() %>% 
+      unnest() %>% 
+      set_names(c("variable", "level"))
+    
+    missing_levels %>% 
+      anti_join(tidy_coefs) %>% 
+      bind_rows(tidy_coefs) %>% 
+      arrange(variable, level)
+    
+  }
+
+
+# Cargar datos (generamos una variable categorica para el ejemplo)
+# Ajustar el modelo
+
+
+model <- glm(exitus_num ~ scale(IH_age_estimateyears) + IH_sex + IH_hypertension_mhyn + 
+    IH_chronicpul_mhyn + IH_renal_mhyn + IH_diabetes_mhyn_2 + 
+    scale(IU_PAFI_log) + scale(IU_ph_daily) + scale(IU_lymphocyte_log) + scale(IU_platelet) + 
+    scale(IU_ddimer_log) + scale(IU_urea_log) + scale(IU_creatinine_log) + score.cat, family = "binomial", dat   %>% dplyr::select(exitus_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+  
+  
+  # tidy_coefs <- data.frame(tidy(model))
+  # tidy_coefs$type <- lapply(tidy_coefs$term, function(x) names(PimaIndiansDiabetes2)[grep(pattern=x, names(PimaIndiansDiabetes2))])
+  # 
+  # outcome <- "diabetes"
+  # datos <- model$data
+  # names(datos)[!names(datos)%in%outcome]
+  # 
+  # 
+  # tidy_coefs_with_ref(model)
+  # 
+  # taula <- gtsummary::tbl_regression(model, exponentiate = TRUE)
+  # 
+  # modify_column_hide_ex1 <-
+  #   model %>%
+  #   tbl_regression() %>%
+  #   modify_column_hide(column = ci) %>%
+  #   modify_column_unhide(column = std.error)
+  # 
+  # 
+  
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+taula$pvalue <- round(taula$pvalue,4)
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Add referencia para age_cat
+  # aux <- taula[length(taula$name),]
+  # aux$beta <- 0
+  # aux$se <- aux$pvalue <- NA
+  # aux$orden <- 99
+  # aux$name <- paste0("age_cat", levels(PimaIndiansDiabetes2$age_cat)[1])
+  # taula <- rbind(taula, aux)
+  # taula$orden[ taula$orden==8] <- 9
+  # taula$orden[ taula$orden==99] <- 8
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("Clinical model + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+p1 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, 
+                                             fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI, fpDrawCircleCI,fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Hazard Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+cairo_pdf("09_results/clinical_score_INTRAUCI.pdf",width = 7,height = 12)
+p1
+dev.off()
+
+p1
+```
+
+
+
+## APACHE
+
+### Mortalidad 
+
+```{r}
+explanatory.cat = c("IU_APACHE","score.cat")
+dat %>%  filter(follow >0) %>% 
+    finalfit(dependent, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)    -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%  filter(follow >0) %>%
+#    hr_plot(dependent, explanatory.cat, pval = TRUE)
+
+explanatory = "IU_APACHE"
+mod <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))) , dat %>%  filter(follow >0)  %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",paste0(c(explanatory),collapse = "+"))) , dat %>%  filter(follow >0)  %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+ctest <- concordance(mod,mod2)
+ctest
+# compare concordance values of fit4 and fit5
+contr <- c(-1, 1)
+dtest <- contr %*% coef(ctest)
+dvar <- contr %*% vcov(ctest) %*% contr
+c(contrast=dtest, sd=sqrt(dvar), z=dtest/sqrt(dvar))
+paste("p.value =",round(pnorm(dtest/sqrt(dvar)),4))
+```
+
+
+
+```{r}
+
+model <- coxph(Surv(follow, exitus) ~ scale(IU_APACHE) + score.cat, dat %>%  filter(follow >0)  %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+  
+ 
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,3,5)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  #taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("APACHE + Score",taula$name),
+                   c("   Hazard Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+p2 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Hazard Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+cairo_pdf("09_results/APACHE_score.pdf",width = 7,height = 4)
+p2
+dev.off()
+
+p2
+```
+
+
+### Mortalidad 28 dias
+
+
+```{r}
+dependent2 = "exitus28_num"
+explanatory.cat = c("IU_APACHE","score.cat")
+dat  %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)    -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat  %>%
+#    hr_plot(dependent, explanatory.cat, pval = TRUE)
+
+explanatory = "IU_APACHE"
+mod <- glm(as.formula(paste0("exitus28_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))),family = "binomial" , dat %>% dplyr::select(exitus28_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus28_num~ ",paste0(c(explanatory),collapse = "+"))),family = "binomial" , dat  %>% dplyr::select(exitus28_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus28_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus28_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus28_num,test_pred),roc(mod2$data$exitus28_num,test_pred2))
+```
+
+
+```{r}
+
+model <- glm(exitus28_num ~ scale(IU_APACHE) + score.cat, family = "binomial", dat %>% dplyr::select(exitus28_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+  
+ 
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("APACHE + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+p2 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Odds Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+cairo_pdf("09_results/APACHE_score_ 28.pdf",width = 7,height = 4)
+p2
+dev.off()
+
+p2
+```
+
+### Mortalidad 90 dias
+
+
+```{r}
+dependent2 = "exitus90_num"
+explanatory.cat = c("IU_APACHE","score.cat")
+dat  %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)    -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%  filter(follow >0) %>%
+#    hr_plot(dependent, explanatory.cat, pval = TRUE)
+
+explanatory = "IU_APACHE"
+mod <- glm(as.formula(paste0("exitus90_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))),family = "binomial" , dat %>% dplyr::select(exitus90_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus90_num~ ",paste0(c(explanatory),collapse = "+"))),family = "binomial" , dat  %>% dplyr::select(exitus90_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus90_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus90_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus90_num,test_pred),roc(mod2$data$exitus90_num,test_pred2))
+```
+
+
+```{r}
+
+model <- glm(exitus90_num ~ scale(IU_APACHE) + score.cat, family = "binomial", dat %>% dplyr::select(exitus90_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+  
+ 
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("APACHE + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+
+p2 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Odds Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+cairo_pdf("09_results/APACHE_score_90.pdf",width = 7,height = 4)
+p2
+dev.off()
+
+p2
+```
+
+
+
+### Mortalidad INTRAUCI dias
+
+
+```{r}
+dependent2 = "exitus_num"
+explanatory.cat = c("IU_APACHE","score.cat")
+dat  %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)    -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%  filter(follow >0) %>%
+#    hr_plot(dependent, explanatory.cat, pval = TRUE)
+
+explanatory = "IU_APACHE"
+mod <- glm(as.formula(paste0("exitus_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))),family = "binomial" , dat %>% dplyr::select(exitus_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus_num~ ",paste0(c(explanatory),collapse = "+"))),family = "binomial" , dat  %>% dplyr::select(exitus_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus_num,test_pred),roc(mod2$data$exitus_num,test_pred2))
+```
+
+
+```{r}
+
+model <- glm(exitus_num ~ scale(IU_APACHE) + score.cat, family = "binomial", dat %>% dplyr::select(exitus_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+  
+ 
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("APACHE + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+
+p2 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Odds Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+cairo_pdf("09_results/APACHE_score_INTRAUCI.pdf",width = 7,height = 4)
+p2
+dev.off()
+
+p2
+```
+
+
+
+## SOFA
+
+
+### Mortalidad 
+
+```{r}
+explanatory.cat = c("IU_SOFA","score.cat")
+dat %>%  filter(follow >0) %>% 
+    finalfit(dependent, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)    -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+dat %>%  filter(follow >0) %>%
+   hr_plot(dependent, explanatory.cat, pval = TRUE)
+
+explanatory = "IU_SOFA"
+mod <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))) , dat %>%  filter(follow >0)  %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- coxph(as.formula(paste0("Surv(follow,exitus)~ ",paste0(c(explanatory),collapse = "+"))) , dat %>%  filter(follow >0)  %>% dplyr::select(follow,exitus,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+ctest <- concordance(mod,mod2)
+ctest
+# compare concordance values of fit4 and fit5
+contr <- c(-1, 1)
+dtest <- contr %*% coef(ctest)
+dvar <- contr %*% vcov(ctest) %*% contr
+c(contrast=dtest, sd=sqrt(dvar), z=dtest/sqrt(dvar))
+paste("p.value =",round(pnorm(dtest/sqrt(dvar)),4))
+```
+
+
+```{r}
+
+model <- coxph(Surv(follow, exitus) ~ scale(IU_SOFA) + score.cat, dat   %>% filter(follow >0)  %>% dplyr::select(follow,exitus,c("IU_SOFA","score.cat")) %>%  filter(complete.cases(.)) )
+  
+ 
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,3,5)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  #taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("SOFA + Score",taula$name),
+                   c("   Hazard Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+
+p3 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Hazard Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+p3
+
+
+cairo_pdf("09_results/SOFA_score.pdf",width = 7,height = 4)
+p3
+dev.off()
+
+```
+
+
+
+
+### Mortalidad 28 dias
+
+```{r}
+dependent2 = "exitus28_num"
+
+explanatory.cat = c("IU_SOFA","score.cat")
+dat %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)    -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+explanatory = "IU_SOFA"
+mod <- glm(as.formula(paste0("exitus28_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))) , family = "binomial", dat  %>% dplyr::select(exitus28_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus28_num~ ",paste0(c(explanatory),collapse = "+"))) , family = "binomial" , dat %>% dplyr::select(exitus28_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus28_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus28_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus28_num,test_pred),roc(mod2$data$exitus28_num,test_pred2))
+```
+
+
+```{r}
+
+model <- glm(exitus28_num ~ scale(IU_SOFA) + score.cat, family = "binomial" ,dat  %>% dplyr::select(exitus28_num,c("IU_SOFA","score.cat")) %>%  filter(complete.cases(.)) )
+  
+ 
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("SOFA + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+
+p3 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Odds Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+p3
+
+
+cairo_pdf("09_results/SOFA_score_28.pdf",width = 7,height = 4)
+p3
+dev.off()
+
+p3
+
+```
+
+
+
+### Mortalidad 90 dias
+
+```{r}
+dependent2 = "exitus90_num"
+
+explanatory.cat = c("IU_SOFA","score.cat")
+dat %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)    -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+explanatory = "IU_SOFA"
+mod <- glm(as.formula(paste0("exitus90_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))) , family = "binomial", dat  %>% dplyr::select(exitus90_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus90_num~ ",paste0(c(explanatory),collapse = "+"))) , family = "binomial" , dat %>% dplyr::select(exitus90_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus90_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus90_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus90_num,test_pred),roc(mod2$data$exitus90_num,test_pred2))
+```
+
+
+```{r}
+
+model <- glm(exitus90_num ~ scale(IU_SOFA) + score.cat, family = "binomial" ,dat  %>% dplyr::select(exitus90_num,c("IU_SOFA","score.cat")) %>%  filter(complete.cases(.)) )
+  
+ 
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("SOFA + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+p3 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Odds Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+p3
+
+
+cairo_pdf("09_results/SOFA_score_90.pdf",width = 7,height = 4)
+p3
+dev.off()
+
+p3
+```
+
+
+
+
+### Mortalidad INtraUCI
+
+```{r}
+dependent2 = "exitus_num"
+
+explanatory.cat = c("IU_SOFA","score.cat")
+dat %>% 
+    finalfit(dependent2, explanatory.cat, add_dependent_label = FALSE, metrics = TRUE)    -> t 
+t[[1]] %>%  knitr::kable(., align=c("l", "l", "r", "r", "r"))
+t[[2]]
+# dat %>%
+#    or_plot(dependent2, explanatory.cat, pval = TRUE)
+
+explanatory = "IU_SOFA"
+mod <- glm(as.formula(paste0("exitus_num~ ",paste0(c(explanatory,"score.cat"),collapse = "+"))) , family = "binomial", dat  %>% dplyr::select(exitus_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+mod2 <- glm(as.formula(paste0("exitus_num~ ",paste0(c(explanatory),collapse = "+"))) , family = "binomial" , dat %>% dplyr::select(exitus_num,c(explanatory,"score.cat")) %>%  filter(complete.cases(.)) )
+test_pred <- predict(mod, type = "link")
+test_pred2 <- predict(mod2, type = "link")
+
+auc1 <-auc(roc(mod$data$exitus_num,test_pred))
+auc2 <- auc(roc(mod2$data$exitus_num,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(mod$data$exitus_num,test_pred),roc(mod2$data$exitus_num,test_pred2))
+```
+
+
+```{r}
+
+model <- glm(exitus_num ~ scale(IU_SOFA) + score.cat, family = "binomial" ,dat  %>% dplyr::select(exitus_num,c("IU_SOFA","score.cat")) %>%  filter(complete.cases(.)) )
+  
+ 
+# Crear la tabla para el forestplot
+  
+  # Guardamos los beta, se y pvalue
+  taula <- summary(model)$coefficients[,c(1,2,4)]
+  colnames(taula) <- c("beta","se","pvalue")
+  taula <- data.frame(taula)
+  taula$name <- row.names(taula)
+  row.names(taula) <- NULL
+
+  # Excluir el intercept
+  taula <- taula[-1, ]
+  
+  # Add variable orden como la mostraremos en el
+  taula$orden <- c(1:length(taula$name))
+  
+  # Calcular OR, LCI, UCI, OR(95%CI)
+  taula$OR <- exp(taula$beta)
+  taula$LCI <- exp(taula$beta-1.96*taula$se)
+  taula$UCI <- exp(taula$beta+1.96*taula$se)
+  taula$OR_95CI <- paste0(format(round(taula$OR,2), nsmall = 2), " (", format(round(taula$LCI,2), nsmall = 2), "-", format(round(taula$UCI,2), nsmall = 2), ")")
+
+  # Si hay alguna variable categorica, faltaria introducir la categoria de referencia y que printe un OR de 1
+  taula$OR_95CI[is.na(taula$beta)] <- NA
+  taula$OR_95CI[!is.na(taula$beta) & taula$beta=="0"] <- "Ref"
+  taula$LCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$UCI[!is.na(taula$beta) & taula$beta=="0"] <- 1
+  taula$pvalue[is.na(taula$pvalue) & taula$OR_95CI=="Ref"] <- 1
+
+  # Ordenar como mostrar las variables
+  taula <- taula[order(taula$orden),]
+  
+
+# Subgrupo identado (si interesa identar el nombre)
+# taula$name[!is.na(taula$beta)] <- paste("  ",taula$name[!is.na(taula$beta)]) 
+
+# Columns in the table. 
+tabletext <- cbind(c("SOFA + Score",taula$name),
+                   c("   Odds Ratio (95% CI)",taula$OR_95CI))
+
+# Modificar a blanco los no significativos
+
+gpar_list <- NULL
+gpar_list[[1]] <- gpar(fill = "white", col = "black")
+for(i in 1:length(taula$pvalue)){
+  if(!is.na(taula$pvalue[i]) & taula$pvalue[i]>0.05){
+    gpar_list[[i+1]] <- gpar(fill = "white", col = "black")
+  }else{
+    ifelse((taula$OR[i]>1),
+           gpar_list[[i+1]] <- gpar(fill = "#769ECB", col = "#769ECB"),
+           gpar_list[[i+1]] <- gpar(fill = "#FFCCE1", col = "#FFCCE1"))
+  }
+}
+
+
+
+p3 <- forestplot::forestplot(labeltext=tabletext,
+                             fn.ci_norm =  c(fpDrawCircleCI, fpDrawCircleCI),
+                             mean=c(NA,taula$OR),
+                             lower=c(NA,taula$LCI), upper=c(NA, taula$UCI),
+                             title="",
+                             xlab="Odds Ratio (95%CI)\n                                                  <-- Less risk         More risk -->                                                ",
+                             is.summary = c(TRUE, is.na(taula$pvalue)),
+                             txt_gp=fpTxtGp(label=gpar(cex=1),
+                                            ticks=gpar(cex=1),
+                                            xlab=gpar(cex = 1),
+                                            title=gpar(cex = 1.2)),
+                             col=fpColors(box = "black", lines = "black", zero = "gray50"),
+                             zero=1, cex = 0.8, lineheight = unit(11,"mm"), boxsize=0.15, colgap=unit(4,"mm"),
+                             lwd.ci = 2, ci.vertices = TRUE, ci.vertices.height = 0.05, xlog = TRUE, clip = c(0.5,10), 
+                             xticks = c( 1/5,1/4,1/3, 1/2, 1, 2, 3 ,4, 5),
+                             shapes_gp = fpShapesGp(
+                               box = gpar_list,
+                               lines = gpar_list))
+
+
+
+cairo_pdf("09_results/SOFA_score_INTRAUCI.pdf",width = 7,height = 4)
+p3
+dev.off()
+
+p3
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+#cowplot::plot_grid(p1,p2,p3,cols = 1)
+```
+
+
+
+
+# Correlaciones 
+
+```{r}
+library(corrplot)
+dat$estacia_UCI <- as.numeric(dat$estacia_UCI)
+dat$estacia_Hospital <- as.numeric(dat$estacia_Hospital)
+#miRNAs <- miRNAs[-10]
+M <- cor(dat %>% dplyr::select(miRNAs,estacia_Hospital,estacia_UCI, estancia_IMV),use = "pairwise.complete.obs")
+
+testRes = corrplot::cor.mtest(dat %>% dplyr::select(miRNAs,estacia_Hospital,estacia_UCI, estancia_IMV), conf.level = 0.95)
+
+cairo_pdf("09_results/Correlation_miRNAs_estancia_validados.pdf",width = 10,height = 4)
+corrplot::corrplot(M[(length(miRNAs)+1):(dim(M)[2]),1:(length(miRNAs))], method = 'circle', tl.col = 'black', insig='blank',addCoef.col ='black',
+         col = COL2('PiYG'), diag = TRUE)
+dev.off()
+
+
+M <- cor(dat %>% dplyr::select(miRNAs,IU_glucose,IU_creatinine, IU_crp, IU_ddimer, IU_wbc, IU_neutrophil2, IU_lymphocyte, IU_monocytes, IU_platelet, IU_AST, IU_ALT, IU_urea),use = "pairwise.complete.obs")
+
+testRes = corrplot::cor.mtest(dat %>% dplyr::select(miRNAs,score,estacia_Hospital,estacia_UCI, estancia_IMV), conf.level = 0.95)
+
+cairo_pdf("09_results/Correlation_miRNAs_bloodtest_validados.pdf",width = 14,height = 12)
+corrplot::corrplot(M[(length(miRNAs)+1):(dim(M)[2]),1:(length(miRNAs))], method = 'circle', tl.col = 'black', insig='blank',addCoef.col ='black',
+         col = COL2('PiYG'), diag = TRUE)
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+M <- cor(dat %>% dplyr::select(score,estacia_Hospital,estacia_UCI, estancia_IMV),use = "pairwise.complete.obs")
+
+testRes = corrplot::cor.mtest(dat %>% dplyr::select(score,estacia_Hospital,estacia_UCI, estancia_IMV), conf.level = 0.95)
+
+cairo_pdf("09_results/Correlation_miRNAs_estancia_score.pdf",width = 5,height = 8)
+corrplot::corrplot(M[1,2:(dim(M)[2]),drop=FALSE ], method = 'circle', tl.col = 'black', insig='blank',addCoef.col ='black',
+         col = COL2('PiYG'), diag = TRUE)
+dev.off()
+
+
+M <- cor(dat %>% dplyr::select(score,IU_glucose,IU_creatinine, IU_crp, IU_ddimer, IU_wbc, IU_neutrophil2, IU_lymphocyte, IU_monocytes, IU_platelet, IU_AST, IU_ALT, IU_urea),use = "pairwise.complete.obs")
+
+testRes = corrplot::cor.mtest(dat %>% dplyr::select(score,score,estacia_Hospital,estacia_UCI, estancia_IMV), conf.level = 0.95)
+
+cairo_pdf("09_results/Correlation_miRNAs_bloodtest_score.pdf",width = 20,height = 20)
+corrplot::corrplot(M[1,2:(dim(M)[2]),drop=FALSE ], method = 'circle', tl.col = 'black', insig='blank',addCoef.col ='black',
+         col = COL2('PiYG'), diag = TRUE)
+dev.off()
+```
+

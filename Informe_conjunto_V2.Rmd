@@ -1,0 +1,1533 @@
+---
+title: "miRNAs CIBERESUCICOVID secuela"
+author: "Iván Benítez "
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(width = 1000000,
+                      echo = FALSE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.align ='center',
+                      fig.height = 10,
+                      fig.width = 10,
+                      cache = FALSE,
+                      tidy = TRUE)
+```
+
+```{r, library}
+library(compareGroups)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(scales)
+library(FactoMineR)
+library(factoextra)
+library(poLCA)
+library(survminer)
+library(survival)
+library(cmprsk)
+library(tidyLPA)
+library(limma)
+#library(Glimma)
+library(glmnet)
+#source("miRNA/02_R/volcanoplot2.R")
+library(data.table)
+library(ggplot2)
+library(pROC)
+library(Hmisc)
+#source("miRNA/02_R/Violin.R")
+#library(Deducer)
+library(mgcv)
+library(visibly)
+library(ltm)
+library(mixOmics)
+library(DT)
+source("02_R/Funcion_PCA_QualityControl_v2.R")
+```
+
+```{r, read data}
+load(file = "07_Data/BBDD_05_09_22.RData")
+dat2 <- dat
+
+miR <- xlsx::read.xlsx("07_Data/Info para IB análisis MM1 DdGC 211201.xlsx",sheetIndex = 3)
+miR <- miR  %>%  tidyr::spread(miRNA.ID, log2.ct) 
+aux <-  xlsx::read.xlsx("07_Data/Info para IB análisis MM1 DdGC 211201.xlsx",sheetIndex = 2)
+miR <- merge(miR,aux %>% dplyr::select(ID.TRRM,RedCap),by = "ID.TRRM") %>% dplyr::select(-ID.TRRM)
+colnames(miR)[19] <- "REDCap"
+
+miR2 <- xlsx::read.xlsx("07_Data/Datos para Iván MM3 CIBERPOSTCOVID Fase 2 DdGC 230214.xlsx",sheetIndex = 1)
+miR2 <- miR2  %>%  dplyr::filter( is.na(miR2$Comment)) %>% dplyr::select(-Comments,-Sample.Name)
+miR2 <- miR2  %>%  tidyr::spread(miRNA.ID, log2.dct) 
+colnames(miR2)[2:19] <- gsub("-",".",gsub("hsa-","",colnames(miR2)[2:19]))
+
+miR <- rbind(miR,miR2[colnames(miR)])
+dat <- merge(miR, dat,by.x="REDCap",by.y="IH_subjid",all.x = TRUE)
+dat$IH_subjid <- dat$REDCap
+
+check <- xlsx::read.xlsx("07_Data/ID_paper_validacion.xlsx",sheetIndex = 1)
+dat <- dat %>% dplyr::filter(IH_subjid %in% c(check$x,miR2$REDCap))
+dat$fase <- ifelse(dat$IH_subjid%in%check$x,"Fase1","Fase2")
+dat$Redcap.Ciberes <- dat$IH_subjid
+```
+
+```{r}
+# comprobar pacientes seleccionados 
+
+aux <- xlsx::read.xlsx("07_Data/PacientsCIBERPOSTCOVIDesperats_230330.xlsx",sheetIndex = 1)
+
+```
+
+
+```{r}
+dat <- dat %>% filter(dat$AH_outcomes != "Exitus lethalis")
+dat$AH_vap_ceterm[dat$AH_bactpneu_ceterm == "Se desconoce"] <- "No" 
+```
+
+
+```{r}
+dat$IH_IMC_cat <- cut(dat$IH_IMC,c(min(dat$IH_IMC,na.rm = TRUE),30,35,max(dat$IH_IMC,na.rm = TRUE)),labels = c("Normal.Overweight","Obese.ClassI","Obese.ClassII.III")) 
+dat$syn_IMV_time <-  as.numeric(dat$IV_mv_datestart_validated -dat$IH_cestdat )
+dat$syn_IMV_time[dat$syn_HOSP_time<0] <- NA
+dat$syn_IMV_time[dat$syn_HOSP_time<0] <- NA
+dat$syn_IMV_time[dat$syn_HOSP_time>200] <- NA
+```
+
+```{r}
+ss <- xlsx::read.xlsx("07_Data/2022.01.31_BDD_UCICOVID_Fechas_REVISADAS.xlsx",sheetIndex = 2) 
+ss$Fecha.ingreso.uci <- ss$IH_icu_hostdat_validated
+ss$AH_f_datehosp.excel <- ss$AH_f_datehosp_rev
+ss$IH_hostdat_validated_rev <- as.Date(ss$IH_hostdat_validated_rev)
+ss$IH_icu_hostdat_validated_rev <- as.Date(ss$IH_icu_hostdat_validated_rev)
+dat <- merge(dat,ss %>% dplyr::select(IH_subjid,IH_fecha_muestra_rev,AH_f_datehosp.excel,IH_icu_hostdat_validated_rev,IH_hostdat_validated_rev ),by.x = "REDCap",by.y = "IH_subjid",all.x = TRUE)
+# dat$IH_fecha_muestra_rev <- if_else(is.na(dat$IH_fecha_muestra_rev),dat$FECHA.EXTRACCIÓN.de.muestra,dat$IH_fecha_muestra_rev)
+# dat$IH_icu_hostdat_validated.y <- if_else(is.na(dat$IH_icu_hostdat_validated_rev),dat$IH_icu_hostdat_validated,dat$IH_icu_hostdat_validated_rev)
+# dat$IH_icu_hostdat_validated <- dat$IH_icu_hostdat_validated.y
+# dat$IH_hostdat_validated <- if_else(is.na(dat$IH_hostdat_validated_rev), dat$IH_hostdat_validated, dat$IH_hostdat_validated_rev)
+# dat$AH_f_datehosp.excel <- as.Date(dat$AH_f_datehosp.excel)
+# dat$AH_f_datehosp.excel <- if_else(is.na(dat$AH_f_datehosp.excel),dat$AH_f_datehosp,dat$AH_f_datehosp.excel)
+# dat$AH_f_datehosp <- dat$AH_f_datehosp.excel
+# dat$IU_tiempo_muestra <- as.numeric(dat$IH_fecha_muestra_rev - dat$IH_icu_hostdat_validated)
+
+dat$AH_f_datehosp.excel <- as.Date(dat$AH_f_datehosp.excel) 
+dat$AH_f_datehosp_old <- dat$AH_f_datehosp
+dat$AH_f_datehosp <- dat$AH_f_datehosp.excel
+dat$AH_f_datehosp <- dplyr::if_else(is.na(dat$AH_f_datehosp),dat$AH_f_datehosp_old,dat$AH_f_datehosp)
+```
+
+```{r, new variables}
+dat[which(dat$IH_sex == "No especificado"),"IH_sex"] <- NA
+dat$IH_liver_mhyn <- ifelse(dat$IH_modliver_mhyn == "Si" | dat$IH_mildliv_mhyn == "Si", "Si","No") 
+dat$IH_age_cat <- as.character(sjmisc::dicho(dat$IH_age_estimateyears))
+dat$IH_IMC_cat <- as.character(sjmisc::dicho(dat$IH_IMC))
+
+# Follow-up and outcomes 
+dat$follow <- as.numeric(dat$AH_f_datehosp -  dat$IH_fecha_muestra_rev)
+dat$exitus <- ifelse(dat$AH_outcomes == "Exitus lethalis",1,0)
+dat$IMV <- ifelse(dat$AH_invasive_proccur == "Si",1,0)
+dat$fecha_seguimiento_IMV <- dat$AH_f_datehosp 
+dat$fecha_seguimiento_IMV[which(dat$IMV == 1)] <-  dat$IV_mv_datestart_validated[which(dat$IMV == 1)]
+dat$follow_IMV <- as.numeric(dat$fecha_seguimiento_IMV -  dat$IH_icu_hostdat_validated)
+dat$IMV_basal <- ifelse(dat$IMV == 1 &  dat$follow_IMV == 0,"Si","No")
+dat$syn_ICU_time <- as.numeric(dat$IH_icu_hostdat_validated -dat$IH_cestdat )
+dat$syn_HOSP_time <- as.numeric(dat$IH_hostdat_validated -dat$IH_cestdat )
+dat$Hosp_ICU_time <- as.numeric(dat$IH_icu_hostdat_validated -dat$IH_hostdat_validated)
+dat$ICU_IMV_time <- as.numeric(dat$IV_mv_datestart_validated -  dat$IH_icu_hostdat_validated)
+dat$estancia_IMV <- as.numeric(dat$FV_fin_vmi_validated - dat$IV_mv_datestart_validated)
+
+dat$estacia_UCI <-  dat$AU_alta_uci_validated - dat$IH_icu_hostdat_validated
+dat$estacia_Hospital <- dat$AH_f_datehosp -  dat$IH_hostdat_validated   
+## transform analitics parameters 
+dat$IU_ldh_log <- log(dat$IU_ldh)
+dat$IU_procalcitonin[which(dat$IU_procalcitonin == 0)] <- 0.0001
+dat$IU_procalcitonin_log <- log(dat$IU_procalcitonin)
+dat$IU_creatinine_log <- log(dat$IU_creatinine)
+dat$IU_lymphocyte[which(dat$IU_lymphocyte == 0)] <- 0.1
+dat$IU_lymphocyte_log <- log(dat$IU_lymphocyte)
+dat$Neutrophil_to_lymphocyte <- log(dat$IU_neutrophil2/dat$IU_lymphocyte)
+dat$IU_AST_log <- log(dat$IU_AST) 
+dat$IU_ALT_log <- log(dat$IU_ALT)
+dat$IU_urea_log <- log(dat$IU_urea)
+dat$IU_lactate_log <- log(dat$IU_lactate)
+dat$IU_cardbnp_log <- log(dat$IU_cardbnp)
+
+# new variables 
+dat$IU_pafi <- (dat$IU_pao2_daily/dat$IU_ef_ifo2_daily)*100
+dat$IU_pafi[which(dat$IU_pafi>700)] <- NA
+
+
+dat$IH_filtrado <- ifelse(dat$IH_sex == "Mujer",
+       142*((apply(dat %>% dplyr::select(IH_creatinine),1,function(x) min(x/0.7,1))^c(-0.241)))*
+         ((apply(dat %>% dplyr::select(IH_creatinine),1,function(x) max(x/0.7,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears)*1.012,
+       142*((apply(dat %>% dplyr::select(IH_creatinine),1,function(x) min(x/0.9,1))^c(-0.302)))*
+         ((apply(dat %>% dplyr::select(IH_creatinine),1,function(x) max(x/0.9,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears))
+
+
+dat$IU_filtrado <- ifelse(dat$IH_sex == "Mujer",
+       142*((apply(dat %>% dplyr::select(IU_creatinine),1,function(x) min(x/0.7,1))^c(-0.241)))*
+         ((apply(dat %>% dplyr::select(IU_creatinine),1,function(x) max(x/0.7,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears)*1.012,
+       142*((apply(dat %>% dplyr::select(IU_creatinine),1,function(x) min(x/0.9,1))^c(-0.302)))*
+         ((apply(dat %>% dplyr::select(IU_creatinine),1,function(x) max(x/0.9,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears))
+
+dat$IV_filtrado <- ifelse(dat$IH_sex == "Mujer",
+       142*((apply(dat %>% dplyr::select(IV_creatinine),1,function(x) min(x/0.7,1))^c(-0.241)))*
+         ((apply(dat %>% dplyr::select(IV_creatinine),1,function(x) max(x/0.7,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears)*1.012,
+       142*((apply(dat %>% dplyr::select(IV_creatinine),1,function(x) min(x/0.9,1))^c(-0.302)))*
+         ((apply(dat %>% dplyr::select(IV_creatinine),1,function(x) max(x/0.9,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears))
+
+dat$D3_filtrado <- ifelse(dat$IH_sex == "Mujer",
+       142*((apply(dat %>% dplyr::select(D3_creatinine),1,function(x) min(x/0.7,1))^c(-0.241)))*
+         ((apply(dat %>% dplyr::select(D3_creatinine),1,function(x) max(x/0.7,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears)*1.012,
+       142*((apply(dat %>% dplyr::select(D3_creatinine),1,function(x) min(x/0.9,1))^c(-0.302)))*
+         ((apply(dat %>% dplyr::select(D3_creatinine),1,function(x) max(x/0.9,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears))
+
+dat$FV_filtrado <- ifelse(dat$IH_sex == "Mujer",
+       142*((apply(dat %>% dplyr::select(FV_creatinine),1,function(x) min(x/0.7,1))^c(-0.241)))*
+         ((apply(dat %>% dplyr::select(FV_creatinine),1,function(x) max(x/0.7,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears)*1.012,
+       142*((apply(dat %>% dplyr::select(FV_creatinine),1,function(x) min(x/0.9,1))^c(-0.302)))*
+         ((apply(dat %>% dplyr::select(FV_creatinine),1,function(x) max(x/0.9,1))^c(-1.200)))*
+         (0.9938^dat$IH_age_estimateyears))
+
+dat <- dat %>% mutate_if(is.factor, ~replace(., . == "Se desconoce",NA)) %>% mutate_if(is.factor, factor)
+# 
+# dat <- dat %>% filter(IH_hostdat_validated >"2020-03-18" & IH_hostdat_validated< "2021-02-16")
+
+```
+
+```{r,eval=TRUE}
+dat$M3_result_tac_followup___6 <- ifelse(dat$M3_result_tac_followup___6 == 1,"Si","No")
+dat$M6_result_tac_followup___6 <- ifelse(dat$M6_result_tac_followup___6 == 1,"Si","No")
+dat <- dat %>%  mutate(
+  M3_Xray0 = M3_result_xray_followup___0,
+  M3_Xray1 = M3_result_xray_followup___1,
+  M3_Xray2 = M3_result_xray_followup___2,
+  M3_Xray3 = M3_result_xray_followup___3,
+  M3_Xray4 = M3_result_xray_followup___4,
+  M3_Xray5 = M3_result_xray_followup___5)
+
+
+dat <- dat %>%  mutate(
+  M3_tac0 = M3_result_tac_followup___0,
+  M3_tac1 = M3_result_tac_followup___1,
+  M3_tac2 = M3_result_tac_followup___2,
+  M3_tac3 = M3_result_tac_followup___3,
+  M3_tac4 = M3_result_tac_followup___4,
+  M3_tac5 = M3_result_tac_followup___5,
+  M3_tac6 = M3_result_tac_followup___6)
+
+
+dat <- dat %>%  mutate(
+  M6_Xray0 = M6_result_xray_followup___0,
+  M6_Xray1 = M6_result_xray_followup___1,
+  M6_Xray2 = M6_result_xray_followup___2,
+  M6_Xray3 = M6_result_xray_followup___3,
+  M6_Xray4 = M6_result_xray_followup___4,
+  M6_Xray5 = M6_result_xray_followup___5)
+
+
+dat <- dat %>%  mutate(
+  M6_tac0 = M6_result_tac_followup___0,
+  M6_tac1 = M6_result_tac_followup___1,
+  M6_tac2 = M6_result_tac_followup___2,
+  M6_tac3 = M6_result_tac_followup___3,
+  M6_tac4 = M6_result_tac_followup___4,
+  M6_tac5 = M6_result_tac_followup___5,
+  M6_tac6 = M6_result_tac_followup___6)
+
+
+dat <- dat %>%  mutate(
+  Ribavirin = AH_antiviral_cmtrt___0,
+  Lopinavir_ritonavir = AH_antiviral_cmtrt___1,
+  Remdesivir = AH_antiviral_cmtrt___2,
+  Interferon_alfa = AH_antiviral_cmtrt___3,
+  Interferon_beta = AH_antiviral_cmtrt___4,
+  Cloroquina = AH_antiviral_cmtrt___5,
+  Hidroxicloroquina = AH_antiviral_cmtrt___6,
+  Tocilizumab = AH_antiviral_cmtrt___7,
+  Darunavir_cobicistat = AH_antiviral_cmtrt___8,
+  Otros_antiviral = AH_antiviral_cmtrt___9)
+
+dat <- dat %>%  mutate(
+  Ribavirin = ifelse(AH_antiviral_cmyn == "No","No",Ribavirin),
+  Lopinavir_ritonavir = ifelse(AH_antiviral_cmyn == "No","No",Lopinavir_ritonavir),
+  Remdesivir = ifelse(AH_antiviral_cmyn == "No","No",Remdesivir),
+  Interferon_alfa = ifelse(AH_antiviral_cmyn == "No","No",Interferon_alfa),
+  Interferon_beta = ifelse(AH_antiviral_cmyn == "No","No",Interferon_beta),
+  Cloroquina = ifelse(AH_antiviral_cmyn == "No","No",Cloroquina),
+  Hidroxicloroquina = ifelse(AH_antiviral_cmyn == "No","No",Hidroxicloroquina),
+  Tocilizumab = ifelse(AH_antiviral_cmyn == "No","No",Tocilizumab),
+  Darunavir_cobicistat =ifelse(AH_antiviral_cmyn == "No","No",Darunavir_cobicistat),
+  Otros_antiviral = ifelse(AH_antiviral_cmyn == "No","No",Otros_antiviral)
+  )
+
+```
+
+
+
+
+```{r}
+dat$M3_result_tac_followup___0 <- ifelse((is.na(dat$M3_tac_followup) | dat$M3_tac_followup == "No"),NA,dat$M3_result_tac_followup___0 )
+dat$M3_result_tac_followup___1 <- ifelse((is.na(dat$M3_tac_followup) | dat$M3_tac_followup == "No"),NA,dat$M3_result_tac_followup___1 )
+dat$M3_result_tac_followup___2 <- ifelse((is.na(dat$M3_tac_followup) | dat$M3_tac_followup == "No"),NA,dat$M3_result_tac_followup___2 )
+dat$M3_result_tac_followup___3 <- ifelse((is.na(dat$M3_tac_followup) | dat$M3_tac_followup == "No"),NA,dat$M3_result_tac_followup___3 )
+dat$M3_result_tac_followup___4 <- ifelse((is.na(dat$M3_tac_followup) | dat$M3_tac_followup == "No"),NA,dat$M3_result_tac_followup___4 )
+dat$M3_result_tac_followup___5 <- ifelse((is.na(dat$M3_tac_followup) | dat$M3_tac_followup == "No"),NA,dat$M3_result_tac_followup___5 )
+dat$M3_result_tac_followup___6 <- ifelse((is.na(dat$M3_tac_followup) | dat$M3_tac_followup == "No"),NA,dat$M3_result_tac_followup___6 )
+
+dat$M6_result_tac_followup___0 <- ifelse((is.na(dat$M6_tac_followup) | dat$M6_tac_followup == "No"),NA,dat$M6_result_tac_followup___0 )
+dat$M6_result_tac_followup___1 <- ifelse((is.na(dat$M6_tac_followup) | dat$M6_tac_followup == "No"),NA,dat$M6_result_tac_followup___1 )
+dat$M6_result_tac_followup___2 <- ifelse((is.na(dat$M6_tac_followup) | dat$M6_tac_followup == "No"),NA,dat$M6_result_tac_followup___2 )
+dat$M6_result_tac_followup___3 <- ifelse((is.na(dat$M6_tac_followup) | dat$M6_tac_followup == "No"),NA,dat$M6_result_tac_followup___3 )
+dat$M6_result_tac_followup___4 <- ifelse((is.na(dat$M6_tac_followup) | dat$M6_tac_followup == "No"),NA,dat$M6_result_tac_followup___4 )
+dat$M6_result_tac_followup___5 <- ifelse((is.na(dat$M6_tac_followup) | dat$M6_tac_followup == "No"),NA,dat$M6_result_tac_followup___5 )
+dat$M6_result_tac_followup___6 <- ifelse((is.na(dat$M6_tac_followup) | dat$M6_tac_followup == "No"),NA,dat$M6_result_tac_followup___6 )
+
+dat$A1_result_tac_followup_2___0 <- ifelse((is.na(dat$A1_tac_followup_2) | dat$A1_tac_followup_2 == "No"),NA,dat$A1_result_tac_followup_2___0 )
+dat$A1_result_tac_followup_2___1 <- ifelse((is.na(dat$A1_tac_followup_2) | dat$A1_tac_followup_2 == "No"),NA,dat$A1_result_tac_followup_2___1 )
+dat$A1_result_tac_followup_2___2 <- ifelse((is.na(dat$A1_tac_followup_2) | dat$A1_tac_followup_2 == "No"),NA,dat$A1_result_tac_followup_2___2 )
+dat$A1_result_tac_followup_2___3 <- ifelse((is.na(dat$A1_tac_followup_2) | dat$A1_tac_followup_2 == "No"),NA,dat$A1_result_tac_followup_2___3 )
+dat$A1_result_tac_followup_2___4 <- ifelse((is.na(dat$A1_tac_followup_2) | dat$A1_tac_followup_2 == "No"),NA,dat$A1_result_tac_followup_2___4 )
+dat$A1_result_tac_followup_2___5 <- ifelse((is.na(dat$A1_tac_followup_2) | dat$A1_tac_followup_2 == "No"),NA,dat$A1_result_tac_followup_2___5 )
+dat$A1_result_tac_followup_2___6 <- ifelse((is.na(dat$A1_tac_followup_2) | dat$A1_tac_followup_2 == "No"),NA,dat$A1_result_tac_followup_2___6 )
+
+
+
+dat$M3_result_xray_followup___0 <- ifelse((is.na(dat$M3_xray_followup) | dat$M3_xray_followup == "No"),NA,dat$M3_result_xray_followup___0 )
+dat$M3_result_xray_followup___1 <- ifelse((is.na(dat$M3_xray_followup) | dat$M3_xray_followup == "No"),NA,dat$M3_result_xray_followup___1 )
+dat$M3_result_xray_followup___2 <- ifelse((is.na(dat$M3_xray_followup) | dat$M3_xray_followup == "No"),NA,dat$M3_result_xray_followup___2 )
+dat$M3_result_xray_followup___3 <- ifelse((is.na(dat$M3_xray_followup) | dat$M3_xray_followup == "No"),NA,dat$M3_result_xray_followup___3 )
+dat$M3_result_xray_followup___4 <- ifelse((is.na(dat$M3_xray_followup) | dat$M3_xray_followup == "No"),NA,dat$M3_result_xray_followup___4 )
+dat$M3_result_xray_followup___5 <- ifelse((is.na(dat$M3_xray_followup) | dat$M3_xray_followup == "No"),NA,dat$M3_result_xray_followup___5 )
+
+dat$M6_result_xray_followup___0 <- ifelse((is.na(dat$M6_xray_followup) | dat$M6_xray_followup == "No"),NA,dat$M6_result_xray_followup___0 )
+dat$M6_result_xray_followup___1 <- ifelse((is.na(dat$M6_xray_followup) | dat$M6_xray_followup == "No"),NA,dat$M6_result_xray_followup___1 )
+dat$M6_result_xray_followup___2 <- ifelse((is.na(dat$M6_xray_followup) | dat$M6_xray_followup == "No"),NA,dat$M6_result_xray_followup___2 )
+dat$M6_result_xray_followup___3 <- ifelse((is.na(dat$M6_xray_followup) | dat$M6_xray_followup == "No"),NA,dat$M6_result_xray_followup___3 )
+dat$M6_result_xray_followup___4 <- ifelse((is.na(dat$M6_xray_followup) | dat$M6_xray_followup == "No"),NA,dat$M6_result_xray_followup___4 )
+
+dat$A1_result_xray_followup_2___0 <- ifelse((is.na(dat$A1_xray_followup_2) | dat$A1_xray_followup_2 == "No"),NA,dat$A1_result_xray_followup_2___0 )
+dat$A1_result_xray_followup_2___1 <- ifelse((is.na(dat$A1_xray_followup_2) | dat$A1_xray_followup_2 == "No"),NA,dat$A1_result_xray_followup_2___1 )
+dat$A1_result_xray_followup_2___2 <- ifelse((is.na(dat$A1_xray_followup_2) | dat$A1_xray_followup_2 == "No"),NA,dat$A1_result_xray_followup_2___2 )
+dat$A1_result_xray_followup_2___3 <- ifelse((is.na(dat$A1_xray_followup_2) | dat$A1_xray_followup_2 == "No"),NA,dat$A1_result_xray_followup_2___3 )
+dat$A1_result_xray_followup_2___4 <- ifelse((is.na(dat$A1_xray_followup_2) | dat$A1_xray_followup_2 == "No"),NA,dat$A1_result_xray_followup_2___4 )
+dat$A1_result_xray_followup_2___5 <- ifelse((is.na(dat$A1_xray_followup_2) | dat$A1_xray_followup_2 == "No"),NA,dat$A1_result_xray_followup_2___5 )
+
+
+
+dat$M3_date_tac_followup <- if_else(is.na(dat$M3_date_tac_followup),
+                               dat$M3_date_xray_followup,
+                               dat$M3_date_tac_followup)
+dat$M6_date_tac_followup  <- if_else(is.na(dat$M6_date_tac_followup ),
+                               dat$M6_date_xray_followup,
+                               dat$M6_date_tac_followup )
+dat$A1_date_tac_followup_2 <- if_else(is.na(dat$A1_date_tac_followup_2),
+                               dat$A1_date_xray_followup_2,
+                               dat$A1_date_tac_followup_2)
+
+
+
+dat$M3_result_tac_followup___0 <- ifelse(is.na(dat$M3_result_tac_followup___0),dat$M3_result_xray_followup___0,dat$M3_result_tac_followup___0)
+dat$M3_result_tac_followup___1 <- ifelse(is.na(dat$M3_result_tac_followup___1),dat$M3_result_xray_followup___1,dat$M3_result_tac_followup___1)
+dat$M3_result_tac_followup___2 <- ifelse(is.na(dat$M3_result_tac_followup___2),dat$M3_result_xray_followup___2,dat$M3_result_tac_followup___2)
+dat$M3_result_tac_followup___3 <- ifelse(is.na(dat$M3_result_tac_followup___3),dat$M3_result_xray_followup___3,dat$M3_result_tac_followup___3)
+dat$M3_result_tac_followup___4 <- ifelse(is.na(dat$M3_result_tac_followup___4),dat$M3_result_xray_followup___4,dat$M3_result_tac_followup___4)
+dat$M3_result_tac_followup___5 <- ifelse(is.na(dat$M3_result_tac_followup___5),dat$M3_result_xray_followup___5,dat$M3_result_tac_followup___5)
+
+dat$M6_result_tac_followup___0 <- ifelse(is.na(dat$M6_result_tac_followup___0),dat$M6_result_xray_followup___0,dat$M6_result_tac_followup___0)
+dat$M6_result_tac_followup___1 <- ifelse(is.na(dat$M6_result_tac_followup___1),dat$M6_result_xray_followup___1,dat$M6_result_tac_followup___1)
+dat$M6_result_tac_followup___2 <- ifelse(is.na(dat$M6_result_tac_followup___2),dat$M6_result_xray_followup___2,dat$M6_result_tac_followup___2)
+dat$M6_result_tac_followup___3 <- ifelse(is.na(dat$M6_result_tac_followup___3),dat$M6_result_xray_followup___3,dat$M6_result_tac_followup___3)
+dat$M6_result_tac_followup___4 <- ifelse(is.na(dat$M6_result_tac_followup___4),dat$M6_result_xray_followup___4,dat$M6_result_tac_followup___4)
+dat$M6_result_tac_followup___5 <- ifelse(is.na(dat$M6_result_tac_followup___5),dat$M6_result_xray_followup___5,dat$M6_result_tac_followup___5)
+
+dat$A1_result_tac_followup_2___0 <- ifelse(is.na(dat$A1_result_tac_followup_2___0),dat$A1_result_xray_followup_2___0,dat$A1_result_tac_followup_2___0)
+dat$A1_result_tac_followup_2___1 <- ifelse(is.na(dat$A1_result_tac_followup_2___1),dat$A1_result_xray_followup_2___1,dat$A1_result_tac_followup_2___1)
+dat$A1_result_tac_followup_2___2 <- ifelse(is.na(dat$A1_result_tac_followup_2___2),dat$A1_result_xray_followup_2___2,dat$A1_result_tac_followup_2___2)
+dat$A1_result_tac_followup_2___3 <- ifelse(is.na(dat$A1_result_tac_followup_2___3),dat$A1_result_xray_followup_2___3,dat$A1_result_tac_followup_2___3)
+dat$A1_result_tac_followup_2___4 <- ifelse(is.na(dat$A1_result_tac_followup_2___4),dat$A1_result_xray_followup_2___4,dat$A1_result_tac_followup_2___4)
+dat$A1_result_tac_followup_2___5 <- ifelse(is.na(dat$A1_result_tac_followup_2___5),dat$A1_result_xray_followup_2___5,dat$A1_result_tac_followup_2___5)
+```
+
+
+## Información disponible en visitas de seguimiento 
+
+
+```{r}
+# correccion de fechas 
+
+# dat$M3_followup_spirometry_date[which(dat$Redcap.Ciberes == "30-166")] <- dat$M3_followup_spirometry_date[which(dat$Redcap.Ciberes == "30-166")] + 365 
+# dat$M3_followup_spirometry_date[which(dat$Redcap.Ciberes == "53-34")] <- dat$M3_followup_spirometry_date[which(dat$Redcap.Ciberes == "53-34")] + 365 
+
+dat$M3_followup_spirometry_date <- if_else(dat$M3_followup_spirometry_date<dat$AH_f_datehosp,dat$M3_followup_spirometry_date+ 365,dat$M3_followup_spirometry_date)
+dat$M6_followup_spirometry_date <- if_else(dat$M6_followup_spirometry_date<dat$AH_f_datehosp,dat$M6_followup_spirometry_date+ 365,dat$M6_followup_spirometry_date)
+dat$A1_followup_spirometry_date_3 <- if_else(dat$A1_followup_spirometry_date_3<dat$AH_f_datehosp,dat$A1_followup_spirometry_date_3+ 365,dat$A1_followup_spirometry_date_3)
+
+# tener el cuenta la fecha en los postcovid """"""""""""
+
+aux <- rbind(dat %>% dplyr::select(Redcap.Ciberes,M3_followup_dlco,M3_followup_spirometry_date,AH_f_datehosp) %>% 
+               mutate(time = "M3") %>%
+               rename(., dlco = M3_followup_dlco, date = M3_followup_spirometry_date),
+             dat %>% dplyr::select(Redcap.Ciberes,M6_followup_dlco,M6_followup_spirometry_date,AH_f_datehosp)
+             %>% mutate(time = "M6") %>% 
+               rename(., dlco = M6_followup_dlco, date = M6_followup_spirometry_date),
+             dat %>% dplyr::select(Redcap.Ciberes,A1_followup_dlco_3,A1_followup_spirometry_date_3,AH_f_datehosp)
+             %>% mutate(time = "A1") %>% 
+               rename(., dlco = A1_followup_dlco_3, date = A1_followup_spirometry_date_3)) %>%
+  filter(complete.cases(.)) %>%
+  mutate(time2 = as.numeric(date - AH_f_datehosp)) 
+
+# aux2 <- aux %>%
+#   group_by(Redcap.Ciberes) %>%
+#   mutate( dif = abs(median(aux$time2) - time2)) %>%
+#   slice(which.min(dif)) %>%
+#   dplyr::select(Redcap.Ciberes,dlco,date,time,time2)
+
+aux2 <- aux %>%
+  group_by(Redcap.Ciberes) %>%
+  mutate( dif = abs(median(aux$time2) - time2)) %>%
+  slice(which.min(time2)) %>%
+  dplyr::select(Redcap.Ciberes,dlco,date,time,time2)
+
+names(aux2) <- c("Redcap.Ciberes","M36_followup_dlco","M36_followup_spirometry_date","time","time2")
+dat <- merge(dat,aux2,by="Redcap.Ciberes",all.x = TRUE)
+
+
+dat$tiempo_seguimiento <- as.numeric(dat$M36_followup_spirometry_date - dat$AH_f_datehosp)
+
+
+dat$M36_result_tac_followup___0 <- ifelse(dat$time == "M3",dat$M3_result_tac_followup___0,
+                       ifelse(dat$time == "M6", dat$M6_result_tac_followup___0,
+                              dat$A1_result_tac_followup___0))
+dat$M36_result_tac_followup___1 <- ifelse(dat$time == "M3",dat$M3_result_tac_followup___1,
+                       ifelse(dat$time == "M6", dat$M6_result_tac_followup___1,
+                              dat$A1_result_tac_followup___1))
+dat$M36_result_tac_followup___2 <- ifelse(dat$time == "M3",dat$M3_result_tac_followup___2,
+                       ifelse(dat$time == "M6", dat$M6_result_tac_followup___2,
+                              dat$A1_result_tac_followup___2))
+dat$M36_result_tac_followup___3 <- ifelse(dat$time == "M3",dat$M3_result_tac_followup___3,
+                       ifelse(dat$time == "M6", dat$M6_result_tac_followup___3,
+                              dat$A1_result_tac_followup___3))
+dat$M36_result_tac_followup___4 <- ifelse(dat$time == "M3",dat$M3_result_tac_followup___4,
+                       ifelse(dat$time == "M6", dat$M6_result_tac_followup___4,
+                              dat$A1_result_tac_followup___4))
+dat$M36_result_tac_followup___5 <- ifelse(dat$time == "M3",dat$M3_result_tac_followup___5,
+                       ifelse(dat$time == "M6", dat$M6_result_tac_followup___5,
+                              dat$A1_result_tac_followup___5))
+dat$M36_followup_spirometry_fvc <- ifelse(dat$time == "M3",dat$M3_followup_spirometry_fvc,
+                       ifelse(dat$time == "M6", dat$M6_followup_spirometry_fvc,
+                              dat$A1_followup_spirometry_fvc_3))
+dat$M36_followup_spirometry_fev <- ifelse(dat$time == "M3",dat$M3_followup_spirometry_fev,
+                       ifelse(dat$time == "M6", dat$M6_followup_spirometry_fev,
+                              dat$A1_followup_spirometry_fev_3))
+dat$M36_followup_spirometry_fev_fvc <- ifelse(dat$time == "M3",dat$M3_followup_spirometry_fev_fvc,
+                       ifelse(dat$time == "M6", dat$M6_followup_spirometry_fev_fvc,
+                              dat$A1_followup_spirometry_fev_fvc_3))
+
+
+#dat <- dat %>% filter(fase == "Fase1")
+```
+
+
+
+```{r}
+dat <- dat %>% 
+  mutate( PAFI_min = dat %>% dplyr::select(contains("PAFI")) %>% apply(.,1,function(x){ifelse(all(is.na(x)),NA,min(x,na.rm = TRUE))}),
+          pao2_min = dat %>% dplyr::select(contains("pao2")) %>% apply(.,1,function(x){ifelse(all(is.na(x)),NA,min(x,na.rm = TRUE))}),
+          paco2_max = dat %>% dplyr::select(contains("paco2")) %>% apply(.,1,function(x){ifelse(all(is.na(x)),NA,max(x,na.rm = TRUE))}),
+          ph_min = dat %>% dplyr::select(contains("ph_")) %>% apply(.,1,function(x){ifelse(all(is.na(x)),NA,min(x,na.rm = TRUE))}),
+          hco3_min = dat %>% dplyr::select(contains("hco3")) %>% apply(.,1,function(x){ifelse(all(is.na(x)),NA,min(x,na.rm = TRUE))}),
+          oxy_vsorres_min = dat %>% dplyr::select(contains("oxy_vsorres")) %>% apply(.,1,function(x){ifelse(all(is.na(x)),NA,min(x,na.rm = TRUE))}))
+
+dat <- dat %>%  mutate(
+  M36_dlco_trend = ifelse(M36_followup_dlco<60,"<60",
+                          ifelse(M36_followup_dlco<80,"60<x<80",">80")),
+  M36_dlco_60 = ifelse(M36_followup_dlco<60,"<60",">60"),
+  M36_dlco_80 = ifelse(M36_followup_dlco<80,"<80",">80"),
+)
+dat$M36_dlco_80 <- relevel(factor(dat$M36_dlco_80),ref = ">80")
+dat$M36_dlco_60 <- relevel(factor(dat$M36_dlco_60),ref = ">60")
+dat$AH_highflow_prdur[which(dat$AH_highflow_proccur == "No")] <- 0
+dat$AH_invasive_prdur[which(dat$AH_invasive_proccur == "No")] <- 0
+dat$AH_prone_prdur[which(dat$AH_pronevent_prtrt == "No")] <- 0
+dat$AH_inotrop_prdur[which(dat$AH_inotrop_cmtrt == "No")] <- 0
+dat$AH_ecmo_dur[which(dat$AH_extracorp_prdur == "No")] <- 0
+dat$AH_antibiotic_cmdur_2[which(dat$AH_antibiotic_cmyn == "No")] <- 0
+dat$AH_corticos_cmdur[which(dat$AH_corticost_cmyn == "No")] <- 0
+dat$AH_tracheo_prtrt_duration[which(dat$AH_tracheo_prtrt == "No")] <- 0
+dat$AH_inotrop_prdur[which(dat$AH_inotrop_cmtrt == "No")] <- 0
+dat$AH_neuroblock_dur[which(dat$AH_neuroblock == "No")] <- 0
+dat$AH_noninvaisve_prdur[which(dat$AH_noninvasive_proccur == "No")] <- 0
+
+ dat$AH_ef_recman <- as.character(dat$AH_ef_recman)
+ dat$AH_ef_recman[which(dat$AH_ef_recman == "Se desconoce")] <- "No"
+ dat$AH_ef_recman <- factor(dat$AH_ef_recman)
+
+dat <- dat %>% mutate_if(is.character,function(x){ifelse(x == "Se desconoce",NA,x)})
+dat <- dat %>% mutate_if(is.factor,function(x){ x = as.character(x); factor(ifelse(x == "Se desconoce",NA,x))})
+
+dat$M36_dlco_trend <- factor(dat$M36_dlco_trend,levels = levels(factor(dat$M36_dlco_trend))[c(2,3,1)])
+
+dat$D3_time <- ifelse((dat$D3_3d_ingreso_uci_validated > dat$IV_mv_datestart_validated), as.numeric( (dat$D3_3d_ingreso_uci_validated - dat$IV_mv_datestart_validated)),NA)
+
+dat$IU_pafi <- ifelse(is.na(dat$IU_pafi),dat$IU_PAFI,dat$IU_pafi)
+
+dat$IH_smoking_mhyn <- factor(dat$IH_smoking_mhyn , levels = levels(factor(dat$IH_smoking_mhyn))[c(2,1,3)])
+```
+
+
+```{r}
+
+dat$AH_corticost_cmtrt_cat <- ifelse(as.character(dat$AH_corticost_cmtrt) %in% c("Hidrocortisona","Betametasona","Parametasona","Prednisolona","Prednisona","Fludrocortisona"),"others",as.character(dat$AH_corticost_cmtrt))
+dat$AH_corticost_cmtrt_2_cat <- ifelse(as.character(dat$AH_corticost_cmtrt_2) %in% c("Hidrocortisona","Betametasona","Parametasona","Prednisolona","Prednisona","Fludrocortisona"),"others",as.character(dat$AH_corticost_cmtrt_2))
+
+dat$AH_corticost_cmtrt_cat_bis <-  paste0(dat$AH_corticost_cmtrt_2_cat," - ", dat$AH_corticost_cmtrt_cat)
+dat$AH_corticost_cmtrt_cat_bis <- ifelse(dat$AH_corticost_cmtrt_cat_bis %in% c("Dexametasona - Metilprednisolona","Metilprednisolona - Dexametasona"),
+                                         "both",
+                                         ifelse(dat$AH_corticost_cmtrt_cat_bis %in% c("Dexametasona - Dexametasona","Dexametasona - others", "NA - Dexametasona", "others - Dexametasona"),
+                                                "Dexametasona",
+                                                ifelse(dat$AH_corticost_cmtrt_cat_bis %in% c("Metilprednisolona - Metilprednisolona","others - Metilprednisolona","NA - Metilprednisolona","Metilprednisolona - NA"),
+                                                       "Metilprednisolona",
+                                                       ifelse(dat$AH_corticost_cmtrt_cat_bis %in% c("others - others", "NA - others"),
+                                                              "Others",
+                                                              NA))))
+dat$AH_corticost_cmddexa_total <-  apply(dat[,c("AH_corticost_cmddexa", "AH_corticost_cmddexa_2")],1,function(x){mean(x,na.rm=TRUE)})
+dat$AH_corticost_cmddexa_dexa <- ifelse(dat$AH_corticost_cmtrt_cat == "Dexametasona", dat$AH_corticost_cmddexa, NA)
+dat$AH_corticost_cmddexa_meti <- ifelse(dat$AH_corticost_cmtrt_cat == "Metilprednisolona", dat$AH_corticost_cmddexa, NA)
+dat$AH_corticost_cmddexa_other <- ifelse(dat$AH_corticost_cmtrt_cat == "others", dat$AH_corticost_cmddexa, NA)
+
+dat$AH_corticost_cmddexa_dexa_2 <- ifelse(dat$AH_corticost_cmtrt_2_cat == "Dexametasona", dat$AH_corticost_cmddexa_2, NA)
+dat$AH_corticost_cmddexa_meti_2 <- ifelse(dat$AH_corticost_cmtrt_2_cat == "Metilprednisolona", dat$AH_corticost_cmddexa_2, NA)
+dat$AH_corticost_cmddexa_other_2 <- ifelse(dat$AH_corticost_cmtrt_2_cat == "others", dat$AH_corticost_cmddexa_2, NA)
+dat$AH_corticost_cmddexa_dexa <-  apply(dat[,c("AH_corticost_cmddexa_dexa", "AH_corticost_cmddexa_dexa_2")],1,function(x){mean(x,na.rm=TRUE)})
+dat$AH_corticost_cmddexa_meti <-  apply(dat[,c("AH_corticost_cmddexa_meti", "AH_corticost_cmddexa_meti_2")],1,function(x){mean(x,na.rm=TRUE)})
+dat$AH_corticost_cmddexa_other <-  apply(dat[,c("AH_corticost_cmddexa_other", "AH_corticost_cmddexa_other_2")],1,function(x){mean(x,na.rm=TRUE)})
+
+dat$AH_corticost_cmddexa_dexa[is.nan(dat$AH_corticost_cmddexa_dexa)] <- NA
+dat$AH_corticost_cmddexa_meti[is.nan(dat$AH_corticost_cmddexa_meti)] <- NA
+dat$AH_corticost_cmddexa_other[is.nan(dat$AH_corticost_cmddexa_other)] <- NA
+```
+
+```{r}
+dat$miR.23a.3p <- NULL
+```
+
+
+
+# Baseline characteristics of the cohort according to information available in follow-up visit.
+
+```{r}
+dat$time2 <- dat$time2/30.24
+dat$included <- ifelse(!is.na(dat$M36_followup_dlco) & dat$time2>0  & dat$time2<13,"Included","Without followup")
+
+vec_names_bas <- dat %>%  dplyr::select(IH_age_estimateyears, IH_sex, IH_IMC, IH_smoking_mhyn, IH_ia_alcohol, IH_ia_drug_all, 
+                                    IH_chroniccard_mhyn:IH_otherrisktext,
+                                    IU_APACHE, IU_SOFA, IU_SOFAh, IU_SOFAr,IU_PAFI, IU_ef_resp_daily, IU_ef_ifo2_daily:IU_oxy_vsorres_daily, 
+                                    IU_haemoglobin:IU_cardbnp,syn_ICU_time,Hosp_ICU_time,AH_antibiotic_cmyn,AH_antiviral_cmtrt___2,AH_antiviral_cmtrt___7,AH_ef_convales,AH_heparint_cmyn,AH_antiviral_cmtrt___6,AH_corticost_cmyn,AH_highflow_proccur,AH_noninvasive_proccur,AH_invasive_proccur,AH_pronevent_prtrt,AH_extracorp_prdur,AH_f_alive28,AH_f_deathsite,AH_invasive_prdur,AH_hodur,estacia_Hospital,syn_HOSP_time,Hosp_ICU_time,ICU_IMV_time,AH_outcomes,AH_ef_recman) %>%  names
+
+res <- compareGroups( included~., data = dat  %>% dplyr::select(vec_names_bas,included),
+                      method = NA, 
+                      include.miss = FALSE)
+tab <- createTable(res,show.all=T, show.n = TRUE, hide.no = "0")
+export2md(tab)
+export2xls(tab,"Included.xlsx")
+```
+
+
+```{r,eval=TRUE}
+dat <- dat %>%  filter(included == "Included")
+
+```
+
+
+# Lista de hospitales 
+
+```{r}
+DT::datatable(data.frame(table(dat$IH_sitename[dat$REDCap %in% miR$REDCap])) %>%  arrange(desc(Freq)), extensions = "Buttons", options = list(pageLength = 60, dom = "Bftip", buttons = c("copy", "csv", "excel", "pdf")))
+```
+
+```{r}
+DT::datatable(dat %>% dplyr::select(Redcap.Ciberes,IH_hostdat_validated,AH_f_datehosp,M36_followup_spirometry_date,time,time2, M36_followup_dlco), extensions = "Buttons", options = list(pageLength = 60, dom = "Bftip", buttons = c("copy", "csv", "excel", "pdf")))
+
+```
+
+
+# Comparativa DLCO
+
+
+## Baseline characteristics of the cohort according DLCO at follow-up visit.
+
+
+```{r}
+
+dat$AH_corticost_cmtrt_cat <- ifelse(as.character(dat$AH_corticost_cmtrt) %in% c("Hidrocortisona","Betametasona","Parametasona","Prednisolona","Prednisona","Fludrocortisona"),"others",as.character(dat$AH_corticost_cmtrt))
+dat$AH_corticost_cmtrt_2_cat <- ifelse(as.character(dat$AH_corticost_cmtrt_2) %in% c("Hidrocortisona","Betametasona","Parametasona","Prednisolona","Prednisona","Fludrocortisona"),"others",as.character(dat$AH_corticost_cmtrt_2))
+
+dat$AH_corticost_cmtrt_cat_bis <-  paste0(dat$AH_corticost_cmtrt_2_cat," - ", dat$AH_corticost_cmtrt_cat)
+dat$AH_corticost_cmtrt_cat_bis <- ifelse(dat$AH_corticost_cmtrt_cat_bis %in% c("Dexametasona - Metilprednisolona","Metilprednisolona - Dexametasona"),
+                                         "both",
+                                         ifelse(dat$AH_corticost_cmtrt_cat_bis %in% c("Dexametasona - Dexametasona","Dexametasona - others", "NA - Dexametasona", "others - Dexametasona"),
+                                                "Dexametasona",
+                                                ifelse(dat$AH_corticost_cmtrt_cat_bis %in% c("Metilprednisolona - Metilprednisolona","others - Metilprednisolona","NA - Metilprednisolona","Metilprednisolona - NA"),
+                                                       "Metilprednisolona",
+                                                       ifelse(dat$AH_corticost_cmtrt_cat_bis %in% c("others - others", "NA - others"),
+                                                              "Others",
+                                                              NA))))
+dat$AH_corticost_cmddexa_total <-  apply(dat[,c("AH_corticost_cmddexa", "AH_corticost_cmddexa_2")],1,function(x){mean(x,na.rm=TRUE)})
+dat$AH_corticost_cmddexa_dexa <- ifelse(dat$AH_corticost_cmtrt_cat == "Dexametasona", dat$AH_corticost_cmddexa, NA)
+dat$AH_corticost_cmddexa_meti <- ifelse(dat$AH_corticost_cmtrt_cat == "Metilprednisolona", dat$AH_corticost_cmddexa, NA)
+dat$AH_corticost_cmddexa_other <- ifelse(dat$AH_corticost_cmtrt_cat == "others", dat$AH_corticost_cmddexa, NA)
+
+dat$AH_corticost_cmddexa_dexa_2 <- ifelse(dat$AH_corticost_cmtrt_2_cat == "Dexametasona", dat$AH_corticost_cmddexa_2, NA)
+dat$AH_corticost_cmddexa_meti_2 <- ifelse(dat$AH_corticost_cmtrt_2_cat == "Metilprednisolona", dat$AH_corticost_cmddexa_2, NA)
+dat$AH_corticost_cmddexa_other_2 <- ifelse(dat$AH_corticost_cmtrt_2_cat == "others", dat$AH_corticost_cmddexa_2, NA)
+dat$AH_corticost_cmddexa_dexa <-  apply(dat[,c("AH_corticost_cmddexa_dexa", "AH_corticost_cmddexa_dexa_2")],1,function(x){mean(x,na.rm=TRUE)})
+dat$AH_corticost_cmddexa_meti <-  apply(dat[,c("AH_corticost_cmddexa_meti", "AH_corticost_cmddexa_meti_2")],1,function(x){mean(x,na.rm=TRUE)})
+dat$AH_corticost_cmddexa_other <-  apply(dat[,c("AH_corticost_cmddexa_other", "AH_corticost_cmddexa_other_2")],1,function(x){mean(x,na.rm=TRUE)})
+
+dat$AH_corticost_cmddexa_dexa[is.nan(dat$AH_corticost_cmddexa_dexa)] <- NA
+dat$AH_corticost_cmddexa_meti[is.nan(dat$AH_corticost_cmddexa_meti)] <- NA
+dat$AH_corticost_cmddexa_other[is.nan(dat$AH_corticost_cmddexa_other)] <- NA
+
+
+vec_names_bas <- dat %>%  dplyr::select(IH_age_estimateyears, IH_sex, IH_IMC, IH_smoking_mhyn, IH_ia_alcohol, IH_ia_drug_all, 
+                                    IH_chroniccard_mhyn:IH_otherrisktext,
+                                    IU_APACHE, IU_SOFA, IU_SOFAh, IU_SOFAr,IU_PAFI, IU_ef_resp_daily, IU_ef_ifo2_daily:IU_oxy_vsorres_daily, 
+                                    IU_haemoglobin:IU_cardbnp,syn_ICU_time,Hosp_ICU_time,AH_antibiotic_cmyn,AH_antiviral_cmtrt___2,AH_antiviral_cmtrt___7,AH_ef_convales,AH_heparint_cmyn,AH_antiviral_cmtrt___6,AH_corticost_cmyn,AH_highflow_proccur,AH_noninvasive_proccur,AH_invasive_proccur,AH_pronevent_prtrt,AH_extracorp_prdur,AH_f_alive28,AH_f_deathsite,AH_invasive_prdur,AH_hodur,estacia_Hospital,syn_HOSP_time,Hosp_ICU_time,ICU_IMV_time,AH_outcomes,M36_dlco_80, IH_IMC_cat,AH_antiviral_cmyn,AH_prone_prdur,AH_ef_recman, AH_bactpneu_ceterm, AH_ards_ceterm, AH_pulmemb_ceterm, AH_bacteraemia_ceterm, AH_renalinjury_ceterm, AH_liverdysfunction_ceterm, AH_hyperglycemia_aeterm, AH_ef_infyn, PAFI_min,pao2_min,paco2_max,ph_min,hco3_min, IV_ef_ifo2_daily, IV_VTweight,IV_VRatio, IV_compliance, IV_lymphocyte, IV_ef_peep, IV_ef_airplat,IV_DPress, IV_ef_airplat,IV_ef_airpeak,AH_corticost_cmtrt_cat_bis,AH_corticost_cmddexa_dexa,AH_corticost_cmddexa_meti,AH_corticost_cmddexa_other,AH_heparin_prophylaxis___0,AH_heparin_prophylaxis___1,AH_heparin_prophylaxis___2,AH_vap_ceterm) %>%  names
+
+
+res <- compareGroups( M36_dlco_80~., data = dat  %>% dplyr::select(vec_names_bas,M36_dlco_80),
+                      method = NA, 
+                      include.miss = FALSE)
+tab <- createTable(res,show.all=T, show.n = TRUE, hide.no = "1")
+export2md(tab)
+export2xls(tab,"09_results/Tabla_basal.xlsx")
+```
+
+## Tabla secuelas en funcion de DLCO >80
+
+
+M36_result_tac_followup___0 = "Normalización radiológica"
+M36_result_tac_followup___1 = "Infiltrados persistentes"
+M36_result_tac_followup___2 = "EPID"
+M36_result_tac_followup___3 = "Tractos fibrosos"
+M36_result_tac_followup___4 = "Enfisema"
+M36_result_tac_followup___5 = "Otras alteraciones"
+
+
+```{r}
+
+vec_names_bas <- dat %>%  dplyr::select(M36_dlco_80,M36_followup_dlco, M36_followup_spirometry_fev, M36_followup_spirometry_fvc, M36_followup_spirometry_fev_fvc, M36_result_tac_followup___0,M36_result_tac_followup___1, M36_result_tac_followup___2, M36_result_tac_followup___3, M36_result_tac_followup___5, M36_result_tac_followup___4,  ) %>%  names
+
+
+res <- compareGroups( M36_dlco_80~., data = dat  %>% dplyr::select(vec_names_bas),
+                      method =NA, 
+                      include.miss = FALSE)
+tab <- createTable(res,show.all=T, show.n = TRUE, hide.no = "1",show.p.trend = TRUE,show.p.overall = FALSE)
+export2md(tab)
+export2xls(tab,"09_results/Tabla_secuelas_respiratorias.xlsx")
+
+```
+
+## Quality Control of miRNAs
+
+### Raw data 
+
+```{r}
+DT::datatable(dat %>% dplyr::select(REDCap,miR.132.3p:miR.98.5p), extensions = "Buttons", options = list(pageLength = 20, dom = "Bftip", buttons = c("copy", "csv", "excel", "pdf")))
+```
+
+### PCA QC
+
+```{r,eval=TRUE}
+
+do = "analyze"
+method = "euclidean"
+type = "median"
+coef = 1.5
+labels = FALSE
+
+    dat$Group <- factor(dat$fase)
+    groups <-  dat$Group
+    names <- dat$REDCap
+    to_outliers <- dat %>% dplyr::select(miR.132.3p:miR.98.5p) 
+    dd <- dist(to_outliers, method = method)
+    distances <- vegan::betadisper(dd, groups, type = type, bias.adjust = FALSE, 
+        sqrt.dist = FALSE, add = FALSE)
+    detect_outliers <- data.frame(distances = distances$distances, 
+        Groups = distances$group, sample = names)
+    limit <- data.frame(aggregate(detect_outliers$distances, 
+        list(detect_outliers$Groups), function(x) {
+            quantile(x, 0.75) + coef * IQR(x)
+        }))
+    colnames(limit)[1] <- "Groups"
+    detect_outliers <- merge(detect_outliers, limit, by = "Groups")
+    detect_outliers <- detect_outliers %>% mutate(out = as.factor(ifelse(distances > 
+        x, 1, 0)))
+    final_outliers <- detect_outliers %>% filter(out == 1) %>% 
+        dplyr::select(sample, Groups, distances, x) %>% rename(group = Groups, 
+        distance_to_centroid = distances, limit_distance = x)
+    if (do == "analyze") {
+        vectors <- data.frame(distances$vectors)
+        centroids <- data.frame(distances$centroids)
+        total_outliers <- vectors %>% tibble::rownames_to_column("sample") %>% 
+            mutate(Group = groups)
+        find_hull <- function(x) {
+            x[chull(x$PCoA1, x$PCoA2), ]
+        }
+        hulls <- total_outliers %>% dplyr::select(-sample) %>% group_by(Group) %>% 
+            dplyr::do(find_hull(.))
+        polygon_plot <- ggplot(total_outliers, aes(x = PCoA1, 
+            y = PCoA2)) + geom_polygon(data = hulls, alpha = 0.5, 
+            aes(fill = Group)) + {
+            if (!labels) 
+                geom_point(aes(shape = Group), size = 3, alpha = 0.7)
+        } + geom_label(data = centroids, aes(x = PCoA1, y = PCoA2, 
+            color = rownames(centroids), label = rownames(centroids)), 
+            show.legend = FALSE) + {
+            if (labels) 
+                geom_text(aes(label = sample))
+        } + theme_bw()
+        distance_boxplot <- ggplot(detect_outliers, aes(Groups, 
+            distances, fill = Groups)) + geom_boxplot(coef = coef, 
+            alpha = 0.8) + ylab("Distance to group centroid") + 
+            xlab("") + {
+            if (labels) 
+                ggrepel::geom_label_repel(data = detect_outliers[detect_outliers$out == 
+                  1, ], aes(label = sample), na.rm = TRUE, size = 4, 
+                  show.legend = FALSE)
+        } + theme_bw() + theme(axis.text.x = element_text(angle = 45, 
+            hjust = 1))
+    
+           # return(list(polygon_plot = polygon_plot, distance_boxplot = distance_boxplot, 
+           #     outliers = final_outliers))
+    }
+    
+polygon_plot
+final_outliers
+```
+
+
+```{r}
+#dat <- dat %>% dplyr::select(-miR.23a.3p,-miR.21.5p) 
+dat$IU_platelet[dat$IU_platelet>1000] <- NA
+
+```
+
+
+## Expresion Diferencial 
+
+### Differential expression  with adjusted by AGE + SEXO + HTA + PUL + RENAL + OBESITY +  DIABETES
+
+```{r}
+# Actualizar con exposicion contínua p for trend
+
+base::source("https://raw.githubusercontent.com/idbenitez/Code_lab/main/Expresion_diferencial_logbase.R")
+dat$IH_sex <- factor(dat$IH_sex)
+miRnames <- dat %>% dplyr::select(miR.132.3p:miR.98.5p) %>% names()
+res_de <- expresion_diferencial_logbase(datos = dat, var_grupo = "M36_dlco_80", vars_ajuste = c("IH_age_estimateyears","IH_sex","IH_hypertension_mhyn","IH_chronicpul_mhyn","IH_renal_mhyn", "IH_obesity_mhyn", "IH_diabetes_mhyn_2"),  noms_proteines = miRnames,names_id ="REDCap",logbase = 10, pval = 0.05, FC_limit = 1.25)
+DE <- res_de[[2]][which((res_de[[2]]$FC>1.25 | res_de[[2]]$FC<0.8) & res_de[[2]]$p.value <0.05),"Names"]
+DE_plasma <- DE
+```
+
+
+#### Table
+
+<div class="blue">
+
+```{r}
+x_plasma <- res_de[[2]]
+datatable(x_plasma, 
+          extensions = 'Buttons', 
+          filter = 'none', 
+          options = list(columnDefs = list(list(className = 'dt-center', targets = 1:2)),
+                         pageLength = nrow(x_plasma), 
+                         dom = 'Btr', scrollX = TRUE, scrollY = "300px", 
+                         deferRender = TRUE, scroller = TRUE, 
+                         buttons = list(
+                           list(extend = 'csv', filename = "descriptive"),
+                           list(extend = 'excel', filename = "descriptive"),
+                           list(extend = 'pdf', filename = "descriptive"),
+                           'print'), 
+                         ordering = F, language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/English.json')), 
+          escape = F,  
+          colnames = colnames(x_plasma), caption = "Adjusted (AGE + SEXO + HTA + PUL + RENAL + OBESITY +  DIABETES) Differential Expression with Limma")
+
+xlsx::write.xlsx(x_plasma,file = "09_results/Expresion_diferencial_con_confusoras.xlsx",row.names = FALSE)
+```
+
+</div>
+
+</br>
+
+#### Volcano plot
+
+`r DE`
+
+```{r}
+res_de[[3]] + xlim(-0.4,0.4)
+```
+
+### Unadjusted Differential expression for trend  
+
+```{r}
+
+res_de <- expresion_diferencial_logbase(datos = dat, var_grupo = "M36_dlco_80", NULL, miRnames,"REDCap",logbase = 10, pval = 0.05, FC_limit = 1.25)
+DE <- res_de[[2]][which((res_de[[2]]$FC>1.25 | res_de[[2]]$FC<0.8) & res_de[[2]]$p.value <0.05),"Names"]
+DE_plasma <- DE
+
+```
+
+
+#### Table
+
+<div class="blue">
+
+```{r}
+x_plasma <- res_de[[2]]
+datatable(x_plasma, 
+          extensions = 'Buttons', 
+          filter = 'none', 
+          options = list(columnDefs = list(list(className = 'dt-center', targets = 1:2)),
+                         pageLength = nrow(x_plasma), 
+                         dom = 'Btr', scrollX = TRUE, scrollY = "300px", 
+                         deferRender = TRUE, scroller = TRUE, 
+                         buttons = list(
+                           list(extend = 'csv', filename = "descriptive"),
+                           list(extend = 'excel', filename = "descriptive"),
+                           list(extend = 'pdf', filename = "descriptive"),
+                           'print'), 
+                         ordering = F, language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/English.json')), 
+          escape = F,  
+          colnames = colnames(x_plasma), caption = "Unadjusted Differential Expression with Limma")
+
+xlsx::write.xlsx(x_plasma,file = "09_results/Expresion_diferencial_sin_confusoras.xlsx",row.names = FALSE)
+```
+
+</div>
+
+</br>
+
+#### Volcano plot
+
+`r DE`
+
+```{r}
+res_de[[3]] + xlim(-0.4,0.4)
+```
+
+```{r}
+miRNAs <- res_de[[2]]$Names
+```
+
+
+#### Figure dotplot 
+
+```{r,fig.height=20, fig.height=25}
+library(ggplot2)
+library(colorspace)
+
+aux2 <- dat %>% dplyr::select(M36_dlco_80,miR.132.3p:miR.98.5p)
+aux2$M36_dlco_80 <- factor(aux2$M36_dlco_80)
+sas=reshape::melt(aux2)
+sas=merge(sas,res_de[[2]],by.x = "variable",by.y = "Names")
+sas$variable <- gsub("hsa-", "",sas$variable)
+colnames(sas)<- c("variable","M36_dlco_80","value","FoldChange","pvalue","pvalue.adj","UCI")
+sas <- sas %>% filter(complete.cases(.))
+#sas$variable <- factor(sas$variable, levels = levels(factor(sas$variable))[c(3,8,9,10,1,2,4,5,6,7)])
+
+pdf("09_results/Figura_dotplot.pdf",width = 15,height = 5)
+
+ggplot(sas, aes(variable, value, fill = M36_dlco_80)) +
+  introdataviz::geom_split_violin(alpha = .4, trim = FALSE) +
+  geom_boxplot(width = .2, alpha = .6, fatten = NULL, show.legend = FALSE) +
+  stat_summary(fun.data = "mean_se", geom = "pointrange", show.legend = F, 
+               position = position_dodge(.175)) +
+#  scale_x_discrete(name = "Condition", labels = c("Non-word", "Word")) +
+ # scale_y_continuous(name = "Reaction time (ms)",
+  #                   breaks = seq(200, 800, 100), 
+  #                   limits = c(200, 800)) +
+ # scale_fill_brewer(palette = "Dark2", name = "M36_dlco_80") +
+  theme_minimal() + scale_fill_manual( name = " ",values = c("#008F9C","#6B327C"),labels = c("<80", ">80"))  + coord_cartesian(ylim=c(1.75,10)) + xlab("")+ 
+  ylab(expression(log[10]*2^{-Delta*Cq})) + coord_cartesian(ylim=c(0,12)) +    
+  theme(plot.background = element_rect(color = 1, size = 1),
+        plot.margin = margin(t = 1,  # Top margin
+                             r = 1,  # Right margin
+                             b = 3,  # Bottom margin
+                             l = 2,  # Left margin
+                             unit = "cm")) 
+dev.off()
+
+
+ggplot(sas, aes(variable, value, fill = M36_dlco_80)) +
+  introdataviz::geom_split_violin(alpha = .4, trim = FALSE) +
+  geom_boxplot(width = .2, alpha = .6, fatten = NULL, show.legend = FALSE) +
+  stat_summary(fun.data = "mean_se", geom = "pointrange", show.legend = F, 
+               position = position_dodge(.175)) +
+#  scale_x_discrete(name = "Condition", labels = c("Non-word", "Word")) +
+ # scale_y_continuous(name = "Reaction time (ms)",
+  #                   breaks = seq(200, 800, 100), 
+  #                   limits = c(200, 800)) +
+ # scale_fill_brewer(palette = "Dark2", name = "M36_dlco_80") +
+  theme_minimal() + scale_fill_manual( name = " ",values = c("#008F9C","#6B327C"),labels = c("<80", ">80"))  + coord_cartesian(ylim=c(1.75,10)) + xlab("")+ 
+  ylab(expression(log[10]*2^{-Delta*Cq})) + coord_cartesian(ylim=c(0,12)) +    
+  theme(plot.background = element_rect(color = 1, size = 1),
+        plot.margin = margin(t = 1,  # Top margin
+                             r = 1,  # Right margin
+                             b = 3,  # Bottom margin
+                             l = 2,  # Left margin
+                             unit = "cm")) 
+```
+
+
+
+
+### Random forest
+
+```{r, comment="",fig.width=20,fig.height=25,eval=TRUE}
+## Seleccion de variables 
+dat.s <- dat %>% dplyr::select(miRNAs,M36_dlco_80) %>% filter(complete.cases(.))
+
+# Listado variables
+knitr::combine_words(c("Listado de variables utilizadas:", names(dat.s)))
+
+library(VSURF)
+set.seed(12)
+vsel<-VSURF(dat.s[,1:(dim(dat.s)[2] - 1)], dat.s[,dim(dat.s)[2]],verbose = FALSE)
+# triga alguns minuts
+
+sel_pred <- colnames(dat.s[,1:(dim(dat.s)[2] - 1)])[vsel$varselect.pred]
+sel_thres <- colnames(dat.s[,1:(dim(dat.s)[2] - 1)])[vsel$varselect.thres]
+
+#sel_pred
+
+#imp.mean.dec: A vector of the variables importance means, in decreasing order.
+#imp.mean.dec.ind: The ordering index vector associated to the sorting of variables importance means.
+
+var_importance <- data.frame(IV = vsel$imp.mean.dec, 
+                             var_name = colnames(dat.s[,1:(dim(dat.s)[2] - 1)])[vsel$imp.mean.dec.ind])
+var_importance <-  var_importance[order(var_importance$IV),]
+var_importance  <- var_importance[var_importance$var_name %in% sel_thres,]
+p <- ggplot(var_importance, aes(x=reorder(var_name, +IV), weight=IV, fill=IV))
+p <- p + geom_bar()
+p <- p + xlab("") + ylab("Variable Importance")
+p <- p + viridis::scale_fill_viridis(direction = -1, option = "D")
+p <- p + theme_bw()  + theme(axis.text.x=element_text(size=8),
+          axis.text.y=element_text(size=8),
+          axis.title=element_text(size=16),
+          plot.title=element_text(size=18),
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=15),
+          legend.position = "none")
+p <- p +  coord_flip()
+
+
+#gg_des <- colorblindr::edit_colors(p, desaturate)
+#cowplot::ggdraw(gg_des)
+
+
+# err.pred: A vector of the mean out-of-bag (OOB) error rates of the random forests models build during the "prediction step".
+
+var_error <- data.frame(Error = vsel$err.pred, prot = colnames(dat.s[,1:(dim(dat.s)[2] - 1)])[vsel$varselect.pred])
+var_error$prot <- factor(var_error$prot,levels = var_error$prot)
+p1 <- ggplot(var_error, aes(x=prot, y=Error,group = 1))+
+  geom_point() + geom_line() + theme_bw()  + theme(axis.text.x=element_text(size=10),
+          axis.text.y=element_text(size=15),
+          axis.title=element_text(size=16),
+          plot.title=element_text(size=18),
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=15),
+          legend.position = "none") + ylab("OOB error rate") + xlab("")
+
+gridExtra::grid.arrange(grobs=list(p,p1), ncol=2, nrow=1)
+
+```
+
+
+```{r}
+dat[,miRNAs] <- impute.nipals(X = dat[,miRNAs], ncomp = 3)
+
+library(maxstat)
+dat$ratio1 <- dat$REDCap
+
+
+for( i in miRNAs){
+  dat$mir1 <- dat[,i]
+  mtHL <- maxstat.test(M36_dlco_80 ~ mir1,data= dat , smethod="Wilcoxon", pmethod="HL",minprop = 0.10)
+  dat$ratio1 <- if_else(dat$mir1> mtHL$estimate, "High","Low")
+  dat$ratio1 <- relevel(factor(dat$ratio1),ref = "Low")
+  dat[,paste0(i,".cat")] <- dat$ratio1 
+}
+```
+
+
+
+
+
+
+
+#### DCLO 80
+
+```{r}
+# 80
+
+dat.s <- dat %>% dplyr::select(M36_dlco_80,time2, IH_age_estimateyears,IH_sex , IH_smoking_mhyn,  AH_noninvaisve_prdur,  AH_invasive_prdur, AH_ef_infyn, miR.93.5p.cat,miR.199a.5p.cat,miR.27a.3p.cat) %>% filter(complete.cases(.))
+set.seed(125)
+scope <- list(upper =  formula(paste0("~  IH_age_estimateyears + IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + AH_ef_infyn + ",paste0(c("miR.93.5p.cat","miR.199a.5p.cat","miR.27a.3p.cat"), collapse = "+"))) ,
+              lower = ~    IH_age_estimateyears + IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + AH_ef_infyn  )
+
+f1 <- glm(I(M36_dlco_80 == "<80") ~   IH_age_estimateyears + IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + AH_ef_infyn  ,data = dat.s,family = "binomial")
+fit <- step(f1, scope = scope,scale = TRUE,trace = FALSE)
+
+summary(fit)
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_dlco_80,test_pred))
+auc2 <- auc(roc(f1$data$M36_dlco_80,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_dlco_80,test_pred),roc(f1$data$M36_dlco_80,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_dlco_80.f <- ifelse(dat.s$M36_dlco_80 == ">80",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 12, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+
+```
+
+
+#### DCLO 60 
+
+
+```{r}
+
+# 60
+
+dat.s <- dat %>% dplyr::select(M36_dlco_60,IH_age_estimateyears,IH_chronicpul_mhyn, AH_invasive_prdur, IU_urea,IU_filtrado, miR.93.5p.cat,miR.199a.5p.cat,miR.27a.3p.cat,time2) %>% filter(complete.cases(.))
+set.seed(125)
+scope <- list(upper =  formula(paste0("~ IH_age_estimateyears+IH_chronicpul_mhyn+ AH_invasive_prdur+ IU_urea + IU_filtrado  +",paste0(c("miR.93.5p.cat","miR.199a.5p.cat","miR.27a.3p.cat"), collapse = "+"))) ,
+              lower = ~   IH_age_estimateyears+IH_chronicpul_mhyn+ AH_invasive_prdur+ IU_urea + IU_filtrado  )
+
+f1 <- glm(M36_dlco_60 ~  IH_age_estimateyears+IH_chronicpul_mhyn+ AH_invasive_prdur+ IU_urea + IU_filtrado ,data = dat.s,family = "binomial")
+fit <- step(f1, scope = scope,scale = TRUE,trace = FALSE)
+
+
+summary(fit)
+
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_dlco_60,test_pred))
+auc2 <- auc(roc(f1$data$M36_dlco_60,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_dlco_60,test_pred),roc(f1$data$M36_dlco_60,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_dlco_60.f <- ifelse(dat.s$M36_dlco_60 == ">60",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 11, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+```
+
+
+#### DLCO continua
+
+```{r}
+# continua
+dat.s <- dat %>% dplyr::select(M36_dlco_80,time2, IH_age_estimateyears, AH_invasive_prdur,IU_filtrado,miR.93.5p.cat,miR.199a.5p.cat,miR.27a.3p.cat) %>% filter(complete.cases(.))
+set.seed(125)
+scope <- list(upper =  formula(paste0("~  IH_age_estimateyears + AH_invasive_prdur + IU_filtrado +",paste0(c("miR.93.5p.cat","miR.199a.5p.cat","miR.27a.3p.cat"), collapse = "+"))) ,
+              lower = ~   IH_age_estimateyears + AH_invasive_prdur + IU_filtrado)
+
+f1 <- glm(M36_dlco_80 ~   IH_age_estimateyears + AH_invasive_prdur + IU_filtrado  ,data = dat.s, family = "binomial")
+fit <- step(f1, scope = scope,scale = TRUE,trace = FALSE)
+
+summary(fit)
+
+
+```
+
+
+#### Fibrosis 
+
+```{r}
+
+dat$M36_result_tac_followup___3 <- factor(ifelse(dat$M36_result_tac_followup___3 == 2,"No","Yes"))
+# Fibrosis 
+
+dat.s <- dat %>% dplyr::select(M36_result_tac_followup___3,time2, AH_bactpneu_ceterm,  AH_noninvaisve_prdur,  AH_invasive_prdur, miR.93.5p.cat,miR.199a.5p.cat,miR.27a.3p.cat) %>% filter(complete.cases(.))
+set.seed(125)
+scope <- list(upper =  formula(paste0("~  AH_bactpneu_ceterm + AH_noninvaisve_prdur + AH_invasive_prdur + ",paste0(c("miR.93.5p.cat","miR.199a.5p.cat","miR.27a.3p.cat"), collapse = "+"))) ,
+              lower = ~    AH_bactpneu_ceterm + AH_noninvaisve_prdur + AH_invasive_prdur)
+
+f1 <- glm(I(M36_result_tac_followup___3 == "Yes") ~  AH_bactpneu_ceterm + AH_noninvaisve_prdur + AH_invasive_prdur ,data = dat.s,family = "binomial")
+fit <- step(f1, scope = scope,scale = TRUE,trace = FALSE)
+
+summary(fit)
+
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_result_tac_followup___3,test_pred))
+auc2 <- auc(roc(f1$data$M36_result_tac_followup___3,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_result_tac_followup___3,test_pred),roc(f1$data$M36_result_tac_followup___3,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_result_tac_followup___3.f <- ifelse(dat.s$M36_result_tac_followup___3 == "No",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 9, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+```
+
+
+
+
+
+
+
+#### Short-term (0-6)
+
+
+
+##### DCLO 80
+
+```{r}
+# 80
+
+dat.s <- dat %>% dplyr::select(M36_dlco_80,time2, IH_age_estimateyears,IH_sex , IH_smoking_mhyn,  AH_noninvaisve_prdur,  AH_invasive_prdur, AH_ef_infyn, miR.93.5p.cat,miR.199a.5p.cat) %>% filter(complete.cases(.)) %>% filter(time2 <6)
+set.seed(125)
+
+f1 <- glm(I(M36_dlco_80 == "<80") ~ IH_age_estimateyears + 
+    IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + 
+    AH_ef_infyn ,data = dat.s,family = "binomial")
+fit <- glm(I(M36_dlco_80 == "<80") ~ IH_age_estimateyears + 
+    IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + 
+    AH_ef_infyn + miR.199a.5p.cat + miR.93.5p.cat,data = dat.s,family = "binomial")
+
+summary(fit)
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_dlco_80,test_pred))
+auc2 <- auc(roc(f1$data$M36_dlco_80,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_dlco_80,test_pred),roc(f1$data$M36_dlco_80,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_dlco_80.f <- ifelse(dat.s$M36_dlco_80 == ">80",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 11, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+
+```
+
+
+##### DCLO 60 
+
+
+```{r}
+
+# 60
+
+dat.s <- dat %>% dplyr::select(M36_dlco_60,IH_age_estimateyears,IH_chronicpul_mhyn, AH_invasive_prdur, IU_urea,IU_filtrado, miR.93.5p.cat,miR.199a.5p.cat,time2) %>% filter(complete.cases(.)) %>% filter(time2 <6)
+set.seed(125)
+
+f1 <- glm(M36_dlco_60 ~ IH_age_estimateyears + IH_chronicpul_mhyn + 
+    AH_invasive_prdur + IU_urea + IU_filtrado,data = dat.s,family = "binomial")
+fit <- glm(M36_dlco_60 ~ IH_age_estimateyears + IH_chronicpul_mhyn + 
+    AH_invasive_prdur + IU_urea + IU_filtrado,data = dat.s,family = "binomial")
+
+
+summary(fit)
+
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_dlco_60,test_pred))
+auc2 <- auc(roc(f1$data$M36_dlco_60,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_dlco_60,test_pred),roc(f1$data$M36_dlco_60,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_dlco_60.f <- ifelse(dat.s$M36_dlco_60 == ">60",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 10, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+```
+
+
+##### DLCO continua
+
+```{r}
+# continua
+dat.s <- dat %>% dplyr::select(M36_dlco_80,time2, IH_age_estimateyears, AH_invasive_prdur,IU_filtrado,miR.93.5p.cat,miR.199a.5p.cat) %>% filter(complete.cases(.)) %>% filter(time2 <6)
+set.seed(125)
+f1 <- glm(M36_dlco_80 ~ IH_age_estimateyears + AH_invasive_prdur + 
+    IU_filtrado  ,data = dat.s, family = "binomial")
+fit <- glm(M36_dlco_80 ~ IH_age_estimateyears + AH_invasive_prdur + 
+    IU_filtrado + miR.199a.5p.cat + miR.93.5p.cat  ,data = dat.s, family = "binomial")
+
+    
+summary(fit)
+
+```
+
+
+##### Fibrosis 
+
+```{r}
+
+# Fibrosis 
+
+dat.s <- dat %>% dplyr::select(M36_result_tac_followup___3,time2, AH_bactpneu_ceterm,  AH_noninvaisve_prdur,  AH_invasive_prdur, miR.93.5p.cat,miR.199a.5p.cat) %>% filter(complete.cases(.)) %>% filter(time2 <6)
+set.seed(125)
+
+f1 <- glm(I(M36_result_tac_followup___3 == "Yes") ~ AH_bactpneu_ceterm + 
+    AH_noninvaisve_prdur + AH_invasive_prdur ,data = dat.s,family = "binomial")
+fit <- glm(I(M36_result_tac_followup___3 == "Yes") ~ AH_bactpneu_ceterm + 
+    AH_noninvaisve_prdur + AH_invasive_prdur + miR.93.5p.cat + 
+    miR.199a.5p.cat ,data = dat.s,family = "binomial")
+
+summary(fit)
+
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_result_tac_followup___3,test_pred))
+auc2 <- auc(roc(f1$data$M36_result_tac_followup___3,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_result_tac_followup___3,test_pred),roc(f1$data$M36_result_tac_followup___3,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_result_tac_followup___3.f <- ifelse(dat.s$M36_result_tac_followup___3 == "No",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 8, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+```
+
+
+
+
+#### Short-term (6-12)
+
+
+
+##### DCLO 80
+
+```{r}
+# 80
+
+dat.s <- dat %>% dplyr::select(M36_dlco_80,time2, IH_age_estimateyears,IH_sex , IH_smoking_mhyn,  AH_noninvaisve_prdur,  AH_invasive_prdur, AH_ef_infyn, miR.93.5p.cat,miR.199a.5p.cat) %>% filter(complete.cases(.)) %>% filter(time2 >=6 & time2<12)
+set.seed(125)
+
+f1 <- glm(I(M36_dlco_80 == "<80") ~ IH_age_estimateyears + 
+    IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + 
+    AH_ef_infyn ,data = dat.s,family = "binomial")
+fit <- glm(I(M36_dlco_80 == "<80") ~ IH_age_estimateyears + 
+    IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + 
+    AH_ef_infyn + miR.199a.5p.cat + miR.93.5p.cat,data = dat.s,family = "binomial")
+
+summary(fit)
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_dlco_80,test_pred))
+auc2 <- auc(roc(f1$data$M36_dlco_80,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_dlco_80,test_pred),roc(f1$data$M36_dlco_80,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_dlco_80.f <- ifelse(dat.s$M36_dlco_80 == ">80",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 11, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+
+```
+
+
+##### DCLO 60 
+
+
+```{r}
+
+# 60
+
+dat.s <- dat %>% dplyr::select(M36_dlco_60,IH_age_estimateyears,IH_chronicpul_mhyn, AH_invasive_prdur, IU_urea,IU_filtrado, miR.93.5p.cat,miR.199a.5p.cat,time2) %>% filter(complete.cases(.)) %>% filter(time2 >=6 & time2<12)
+set.seed(125)
+
+f1 <- glm(M36_dlco_60 ~ IH_age_estimateyears + IH_chronicpul_mhyn + 
+    AH_invasive_prdur + IU_urea + IU_filtrado,data = dat.s,family = "binomial")
+fit <- glm(M36_dlco_60 ~ IH_age_estimateyears + IH_chronicpul_mhyn + 
+    AH_invasive_prdur + IU_urea + IU_filtrado,data = dat.s,family = "binomial")
+
+
+summary(fit)
+
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_dlco_60,test_pred))
+auc2 <- auc(roc(f1$data$M36_dlco_60,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_dlco_60,test_pred),roc(f1$data$M36_dlco_60,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_dlco_60.f <- ifelse(dat.s$M36_dlco_60 == ">60",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 10, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+```
+
+
+##### DLCO continua
+
+```{r}
+# continua
+dat.s <- dat %>% dplyr::select(M36_dlco_80,time2, IH_age_estimateyears, AH_invasive_prdur,IU_filtrado,miR.93.5p.cat,miR.199a.5p.cat) %>% filter(complete.cases(.)) %>% filter(time2 >=6 & time2<12)
+set.seed(125)
+f1 <- glm(M36_dlco_80 ~ IH_age_estimateyears + AH_invasive_prdur + 
+    IU_filtrado  ,data = dat.s, family = "binomial")
+fit <- glm(M36_dlco_80 ~ IH_age_estimateyears + AH_invasive_prdur + 
+    IU_filtrado + miR.199a.5p.cat + miR.93.5p.cat  ,data = dat.s, family = "binomial")
+
+    
+summary(fit)
+
+```
+
+
+##### Fibrosis 
+
+```{r}
+
+# Fibrosis 
+
+dat.s <- dat %>% dplyr::select(M36_result_tac_followup___3,time2, AH_bactpneu_ceterm,  AH_noninvaisve_prdur,  AH_invasive_prdur, miR.93.5p.cat,miR.199a.5p.cat) %>% filter(complete.cases(.)) %>% filter(time2 >=6 & time2<12)
+set.seed(125)
+scope <- list(upper =  formula(paste0("~  AH_bactpneu_ceterm + AH_noninvaisve_prdur + AH_invasive_prdur + ",paste0(c("miR.93.5p.cat","miR.199a.5p.cat"), collapse = "+"))) ,
+              lower = ~    AH_bactpneu_ceterm + AH_noninvaisve_prdur + AH_invasive_prdur)
+
+f1 <- glm(I(M36_result_tac_followup___3 == "Yes") ~ AH_bactpneu_ceterm + 
+    AH_noninvaisve_prdur + AH_invasive_prdur ,data = dat.s,family = "binomial")
+fit <- glm(I(M36_result_tac_followup___3 == "Yes") ~ AH_bactpneu_ceterm + 
+    AH_noninvaisve_prdur + AH_invasive_prdur + miR.93.5p.cat + 
+    miR.199a.5p.cat ,data = dat.s,family = "binomial")
+
+summary(fit)
+
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_result_tac_followup___3,test_pred))
+auc2 <- auc(roc(f1$data$M36_result_tac_followup___3,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_result_tac_followup___3,test_pred),roc(f1$data$M36_result_tac_followup___3,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_result_tac_followup___3.f <- ifelse(dat.s$M36_result_tac_followup___3 == "No",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 8, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+```
+
+
+
+
+
+
+#### Firma mortalidad
+
+
+#### DCLO 80
+
+```{r}
+# 80
+
+dat.s <- dat %>% dplyr::select(M36_dlco_80,time2, IH_age_estimateyears,IH_sex , IH_smoking_mhyn,  AH_noninvaisve_prdur,  AH_invasive_prdur, AH_ef_infyn, miR.16.5p.cat,miR.192.5p.cat,miR.323a.3p.cat,miR.451a.cat) %>% filter(complete.cases(.))
+set.seed(125)
+scope <- list(upper =  formula(paste0("~  IH_age_estimateyears + IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + AH_ef_infyn + ",paste0(c("miR.16.5p.cat","miR.192.5p.cat","miR.323a.3p.cat","miR.451a.cat"), collapse = "+"))) ,
+              lower = ~    IH_age_estimateyears + IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + AH_ef_infyn  )
+
+f1 <- glm(I(M36_dlco_80 == "<80") ~   IH_age_estimateyears + IH_sex + IH_smoking_mhyn + AH_noninvaisve_prdur + AH_invasive_prdur + AH_ef_infyn  ,data = dat.s,family = "binomial")
+fit <- step(f1, scope = scope,scale = TRUE,trace = FALSE)
+
+summary(fit)
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_dlco_80,test_pred))
+auc2 <- auc(roc(f1$data$M36_dlco_80,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_dlco_80,test_pred),roc(f1$data$M36_dlco_80,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_dlco_80.f <- ifelse(dat.s$M36_dlco_80 == ">80",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 13, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+
+```
+
+
+#### DCLO 60 
+
+
+```{r}
+
+# 60
+
+dat.s <- dat %>% dplyr::select(M36_dlco_60,IH_age_estimateyears,IH_chronicpul_mhyn, AH_invasive_prdur, IU_urea,IU_filtrado, miR.16.5p.cat,miR.192.5p.cat,miR.323a.3p.cat,miR.451a.cat,time2) %>% filter(complete.cases(.))
+set.seed(125)
+scope <- list(upper =  formula(paste0("~ IH_age_estimateyears+IH_chronicpul_mhyn+ AH_invasive_prdur+ IU_urea + IU_filtrado  +",paste0(c("miR.16.5p.cat","miR.192.5p.cat","miR.323a.3p.cat","miR.451a.cat"), collapse = "+"))) ,
+              lower = ~   IH_age_estimateyears+IH_chronicpul_mhyn+ AH_invasive_prdur+ IU_urea + IU_filtrado  )
+
+f1 <- glm(M36_dlco_60 ~  IH_age_estimateyears+IH_chronicpul_mhyn+ AH_invasive_prdur+ IU_urea + IU_filtrado ,data = dat.s,family = "binomial")
+fit <- step(f1, scope = scope,scale = TRUE,trace = FALSE)
+
+
+summary(fit)
+
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_dlco_60,test_pred))
+auc2 <- auc(roc(f1$data$M36_dlco_60,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_dlco_60,test_pred),roc(f1$data$M36_dlco_60,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_dlco_60.f <- ifelse(dat.s$M36_dlco_60 == ">60",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 12, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+```
+
+
+#### DLCO continua
+
+```{r}
+# continua
+dat.s <- dat %>% dplyr::select(M36_dlco_80,time2, IH_age_estimateyears, AH_invasive_prdur,IU_filtrado,miR.16.5p.cat,miR.192.5p.cat,miR.323a.3p.cat,miR.451a.cat) %>% filter(complete.cases(.))
+set.seed(125)
+scope <- list(upper =  formula(paste0("~  IH_age_estimateyears + AH_invasive_prdur + IU_filtrado +",paste0(c("miR.16.5p.cat","miR.192.5p.cat","miR.323a.3p.cat","miR.451a.cat"), collapse = "+"))) ,
+              lower = ~   IH_age_estimateyears + AH_invasive_prdur + IU_filtrado)
+
+f1 <- glm(M36_dlco_80 ~   IH_age_estimateyears + AH_invasive_prdur + IU_filtrado  ,data = dat.s, family = "binomial")
+fit <- step(f1, scope = scope,scale = TRUE,trace = FALSE)
+
+summary(fit)
+
+
+```
+
+
+#### Fibrosis 
+
+```{r}
+
+# Fibrosis 
+
+dat.s <- dat %>% dplyr::select(M36_result_tac_followup___3,time2, AH_bactpneu_ceterm,  AH_noninvaisve_prdur,  AH_invasive_prdur, miR.16.5p.cat,miR.192.5p.cat,miR.323a.3p.cat,miR.451a.cat) %>% filter(complete.cases(.))
+set.seed(125)
+scope <- list(upper =  formula(paste0("~  AH_bactpneu_ceterm + AH_noninvaisve_prdur + AH_invasive_prdur + ",paste0(c("miR.16.5p.cat","miR.192.5p.cat","miR.323a.3p.cat","miR.451a.cat"), collapse = "+"))) ,
+              lower = ~    AH_bactpneu_ceterm + AH_noninvaisve_prdur + AH_invasive_prdur)
+
+f1 <- glm(I(M36_result_tac_followup___3 == "Yes") ~  AH_bactpneu_ceterm + AH_noninvaisve_prdur + AH_invasive_prdur ,data = dat.s,family = "binomial")
+fit <- step(f1, scope = scope,scale = TRUE,trace = FALSE)
+
+summary(fit)
+
+
+test_pred <- predict(fit, type = "link")
+test_pred2 <- predict(f1, type = "link")
+
+auc1 <-auc(roc(fit$data$M36_result_tac_followup___3,test_pred))
+auc2 <- auc(roc(f1$data$M36_result_tac_followup___3,test_pred2))
+# compare concordance values of fit4 and fit5
+roc.test(roc(fit$data$M36_result_tac_followup___3,test_pred),roc(f1$data$M36_result_tac_followup___3,test_pred2))
+
+test_pred <- predict(fit, type = "response")
+test_pred2 <- predict(f1, type = "response")
+
+dat.s$M36_result_tac_followup___3.f <- ifelse(dat.s$M36_result_tac_followup___3 == "No",0,1)
+PredictABEL::reclassification(data = dat.s, 
+                              cOutcome = 10, 
+                              predrisk1 = test_pred2, # original model
+                              predrisk2 = test_pred, # updated model
+                              cutoff = c(0,0.5,1))
+```
+
+
